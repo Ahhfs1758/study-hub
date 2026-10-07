@@ -21,7 +21,11 @@
     "predev": "node tools/ensure-runtime.js",
     "prepack:mac": "node tools/ensure-runtime.js",
     "prepack:win": "node tools/ensure-runtime.js",
-    "preverify:bundle": "node tools/ensure-runtime.js"
+    "preverify:bundle": "node tools/ensure-runtime.js",
+    "build:web": "node web/build.js",
+    "verify:web": "node web/verify.js",
+    "serve:web": "node web/build.js && node -e \"const h=require('http'),f=require('fs'),p=require('path'),D='web/dist';h.createServer((q,s)=>{let r=decodeURIComponent(q.url.split('?')[0]);if(r==='/')r='/index.html';const F=p.join(D,r);if(!f.existsSync(F)||f.statSync(F).isDirectory()){s.writeHead(404);return s.end('404')}const T={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png','.svg':'image/svg+xml','.json':'application/json'}[p.extname(F)]||'application/octet-stream';s.writeHead(200,{'Content-Type':T});s.end(f.readFileSync(F))}).listen(8080,'127.0.0.1',()=>console.log('http://127.0.0.1:8080/'))\"",
+    "deploy:web": "node web/build.js && vercel deploy web/dist --prod --yes"
   },
   "devDependencies": {
     "electron": "33.4.11"

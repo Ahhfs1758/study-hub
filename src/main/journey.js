@@ -181,7 +181,12 @@ true;
  * ------------------------------------------------------------------ */
 
 async function run(ctx, outDir, deps) {
-  const { evalJs, wait, shot, store, mainWindow } = deps;
+  /* readDb 而不是直接拿 store：
+     桌面版传 `() => store.read()`（同步），网页版传一个走 CDP 去页面里读的异步函数。
+     这样同一套断言能在两个运行环境里跑 —— 这正是「网页版和桌面版行为一致」的证据，
+     而不是靠人肉比对两边截图。 */
+  const { evalJs, wait, shot, readDb } = deps;
+  if (typeof readDb !== 'function') throw new Error('journey 需要 deps.readDb');
   const results = [];
   let failures = 0;
 
@@ -645,7 +650,7 @@ async function run(ctx, outDir, deps) {
 
   /* ---------- 12. 数据落盘 ---------- */
   {
-    const db = store.read();
+    const db = await readDb();
     record('数据已落盘且结构完整',
       db.version >= 4 && Array.isArray(db.subjects) && Array.isArray(db.reviews) && db.subjects.length >= 1,
       { info: { schema: db.version, 科目: db.subjects.length, 资料: db.materials.length, 计划: db.plans.length, 记录: db.sessions.length, 复习: db.reviews.length } });

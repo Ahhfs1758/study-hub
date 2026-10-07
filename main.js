@@ -10,7 +10,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow, Tray, Menu, nativeImage, shell, powerMonitor, globalShortcut, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, shell, powerMonitor, globalShortcut, dialog, ipcMain } = require('electron');
 
 const { Store, seedDB, defaultDB } = require('./src/main/store');
 const { StudyTimer } = require('./src/main/timer');
@@ -117,8 +117,16 @@ function bootstrap() {
 
     Object.assign(ctx, { store, timer, notifier, scheduler, autostart, dataDir, vaultDir });
 
-    /* ---- IPC（必须在建窗口之前注册，否则前端首帧的 invoke 会打空） ---- */
-    ipc.register(ctx);
+    /* ---- IPC（必须在建窗口之前注册，否则前端首帧的 invoke 会打空） ----
+       处理逻辑在 src/main/ipc.js 里，与网页版共用同一份；
+       这里只做「把通道表挂到 ipcMain」这一件事。 */
+    const host = require('./src/main/host-electron').createHost();
+    const handlers = ipc.createHandlers(ctx, host);
+    for (const [channel, fn] of Object.entries(handlers)) {
+      ipcMain.handle(channel, (_e, ...args) => fn(...args));
+    }
+    ctx.host = host;
+    ctx.handlers = handlers;
 
     /* ---- 计时事件 → 渲染层 ---- */
     timer.on('change', () => {

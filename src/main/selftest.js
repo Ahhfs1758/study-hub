@@ -683,8 +683,7 @@ async function run(ctx, outDir) {
     const helpers = {
       evalJs,
       wait: sleep,
-      store,
-      mainWindow,
+      readDb: async () => store.read(),
       shot: async (name) => {
         try {
           const img = await wc.capturePage();

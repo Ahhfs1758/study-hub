@@ -8,6 +8,10 @@ out/
 
 # 自检产物（截图、报告、进度日志）
 .selftest/
+web/.verify/
+
+# 网页版构建产物（由 web/build.js 生成，不入库）
+web/dist/
 
 # Vercel
 .vercel
