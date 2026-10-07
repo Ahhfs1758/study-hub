@@ -1,0 +1,63 @@
+{
+  "name": "study-hub",
+  "productName": "学习中心",
+  "version": "1.0.0",
+  "description": "面向 macOS / Windows 的学习资料管理系统：统一管理学学习时间、学习计划与学习资料，并提供提醒与监督复盘。",
+  "main": "main.js",
+  "author": "Study Hub",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "node tools/run-app.js",
+    "dev": "node tools/run-app.js --dev",
+    "check": "sh run-checks.sh",
+    "icons": "python3 tools/make-icons.py",
+    "pack:mac": "node tools/make-app.js",
+    "pack:win": "node tools/make-app.js --target=win",
+    "verify:bundle": "node tools/check-bundle.js",
+    "audit:docs": "python3 tools/audit-docs.py",
+    "status": "node tools/status.js",
+    "prestart": "node tools/ensure-runtime.js",
+    "predev": "node tools/ensure-runtime.js",
+    "prepack:mac": "node tools/ensure-runtime.js",
+    "prepack:win": "node tools/ensure-runtime.js",
+    "preverify:bundle": "node tools/ensure-runtime.js"
+  },
+  "devDependencies": {
+    "electron": "33.4.11"
+  },
+  "build": {
+    "appId": "tech.studyhub.app",
+    "productName": "学习中心",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/**/*",
+      "!**/*.md"
+    ],
+    "mac": {
+      "category": "public.app-category.education",
+      "icon": "assets/icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "assets/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}

@@ -1,0 +1,29 @@
+# 依赖
+node_modules/
+
+# 打包产物（.app 有 234MB，绝不该进仓库；它由 `npm run pack:mac` 生成）
+release/
+dist/
+out/
+
+# 自检产物（截图、报告、进度日志）
+.selftest/
+
+# Vercel
+.vercel
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+*.tmp
+*.bak
+
+# 损坏的数据文件隔离产物（store.js 在 JSON 解析失败时会生成）
+*.broken-*
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

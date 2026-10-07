@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'" />
+  <title>学习中心</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">学</div>
+        <div class="brand-text">
+          <b>学习中心</b>
+          <span id="brandSub">今天也要专注</span>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav"></nav>
+
+      <div class="sidebar-foot">
+        <div class="mini-timer" id="miniTimer">
+          <svg class="mini-ring" viewBox="0 0 40 40">
+            <circle cx="20" cy="20" r="16" fill="none" stroke="#e4e8f0" stroke-width="4" />
+            <circle id="miniRing" cx="20" cy="20" r="16" fill="none" stroke="#3b5bfd" stroke-width="4"
+                    stroke-linecap="round" stroke-dasharray="100.5 100.5" stroke-dashoffset="0"
+                    transform="rotate(-90 20 20)" />
+          </svg>
+          <div class="mt-body">
+            <div class="mt-time" id="miniTime">--:--</div>
+            <div class="mt-label" id="miniLabel">未开始</div>
+          </div>
+          <button class="btn icon sm" id="miniToggle" title="开始 / 暂停（⌘⇧S）"></button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="viewTitle">仪表盘</h1>
+          <div class="sub" id="viewSub"></div>
+        </div>
+        <div class="grow"></div>
+        <div class="metrics" id="topMetrics"></div>
+      </header>
+      <div class="content" id="content"><div class="content-inner" id="view"></div></div>
+    </main>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <div id="modalRoot"></div>
+
+  <script src="ui.js"></script>
+  <script src="markdown.js"></script>
+  <script src="charts.js"></script>
+  <script src="preview-ui.js"></script>
+  <script src="views/dashboard.js"></script>
+  <script src="views/focus.js"></script>
+  <script src="views/plans.js"></script>
+  <script src="views/materials.js"></script>
+  <script src="views/srs.js"></script>
+  <script src="views/stats.js"></script>
+  <script src="views/review.js"></script>
+  <script src="views/settings.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
