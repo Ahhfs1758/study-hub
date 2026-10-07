@@ -1,8 +1,12 @@
 # 学习中心 · Study Hub
 
-面向 **macOS / Windows** 的桌面学习管理应用：把**学习时间**、**学习计划**、**学习资料**放在同一个地方统一管理，并通过系统通知进行提醒与监督复盘。
+面向 **macOS / Windows** 的桌面学习管理应用：把**学习时间**、**学习计划**、**学习资料**、**间隔重复复习**放在同一个地方，并通过系统通知进行提醒与监督复盘。
 
 数据全部存在你自己的电脑上，不连接任何服务器。
+
+> **网页版**：<https://study-hub-seven-puce.vercel.app>
+> 打开就能用，数据存在浏览器本地（localStorage），同样不上传任何服务器。
+> 与桌面版**跑的是同一套源码** —— 不是另写的一个简化版。差异见第十一节。
 
 ---
 
@@ -65,6 +69,10 @@ npm start
 | `npm run pack:mac` | 打包成 `release/学习中心.app` |
 | `npm run pack:win` | 在 Windows 上打包成 `release/学习中心-win/` |
 | `npm run verify:bundle` | 只校验已有的打包产物，不重新打包 |
+| `npm run build:web` | 构建网页版到 `web/dist/` |
+| `npm run verify:web` | 在无头浏览器里验收网页版（跑与桌面版同一套流程断言） |
+| `npm run serve:web` | 本地预览网页版 |
+| `npm run deploy:web` | 构建并部署网页版到 Vercel 生产环境 |
 | `npm run icons` | 重新生成图标 |
 
 ### 只想看看现在什么情况？用 `npm run status`
@@ -354,7 +362,8 @@ study-hub/
 ├── 启动学习中心.command / .bat 双击启动（自动切目录 + 自愈运行环境）
 ├── src/
 │   ├── shared/
-│   │   └── rules.js           提醒规则的唯一真值（应用与守护进程共用，纯函数）
+│   │   ├── rules.js           提醒规则的唯一真值（应用与守护进程共用，纯函数）
+│   │   └── api-surface.js     渲染层能看到的 94 个方法（桌面版与网页版共用）
 │   ├── main/
 │   │   ├── store.js           数据持久化：原子写、去抖、自动备份、结构迁移
 │   │   ├── util.js            日期工具（一律按本地时区归日）
@@ -365,7 +374,8 @@ study-hub/
 │   │   ├── autostart.js       把守护进程注册成系统级后台任务（launchd / schtasks）
 │   │   ├── materials.js       资料实体操作：选文件、扫目录、打开、复制入仓
 │   │   ├── preview.js         资料预览：文本/图片读取、二进制探测、PDF 独立窗口
-│   │   ├── ipc.js             所有 IPC handler
+│   │   │   ├── ipc.js             90 个 handler（createHandlers(ctx, host)），两端共用
+│   │   ├── host-electron.js   Electron 平台适配器
 │   │   ├── selftest.js        真机验收：后端层（直接调 API）
 │   │   └── journey.js         真机验收：界面层（只点真实按钮走完整流程）
 │   ├── daemon/
@@ -380,6 +390,15 @@ study-hub/
 │       ├── preview-ui.js      应用内预览弹窗
 │       ├── app.js             路由、状态、事件、常驻 UI
 │       └── views/             dashboard / focus / plans / materials / srs / stats / review / settings
+├── web/                       网页版（与桌面版共用同一套源码）
+│   ├── build.js               打包：CommonJS → 浏览器 bundle + dist/
+│   ├── boot.js                网页版装配层（对应 main.js）
+│   ├── host-browser.js        浏览器平台适配器
+│   ├── verify.js              无头浏览器验收（跑 desktop 的同一套流程断言）
+│   └── shims/                 Node 与 Electron 的浏览器垫片
+│       ├── vfs.js             localStorage 支撑的同步迷你文件系统
+│       ├── node-shims.js      fs / path / crypto / os / events …
+│       └── electron-shim.js   require('electron') 的替身
 ├── tools/
 │   ├── run-app.js             启动器：清掉破坏性环境变量 + 翻译沙箱报错（npm start 的入口）
 │   ├── ensure-runtime.js      自愈运行环境：缺二进制就从本机缓存恢复，补 .bin 链接
@@ -388,6 +407,7 @@ study-hub/
 │   ├── make-icons.py          生成应用图标与菜单栏图标（零依赖）
 │   ├── make-app.js            零依赖打包成 .app / Windows 目录（含中途依赖自检）
 │   ├── check-bundle.js        打包产物校验（自写 Mach-O 解析 + 过期检测）
+│   ├── cdp.js                 零依赖 Chrome DevTools Protocol 客户端
 │   ├── audit-docs.py          文档粘贴安全性审计（拦「行尾注释」这类复制即报错的写法）
 │   └── check-analytics.js     统计口径体检（含自洽性断言）
 ├── assets/                    图标
@@ -528,3 +548,77 @@ npm run pack:mac
   SVG 有没有画出来、节点数够不够全都正常 —— 断言查不出来，只有看图才发现。
   现在 y 轴、目标线、tooltip 共用同一个 `unitLabel`，并且有一条断言专门读轴上文字。
 
+
+---
+
+## 十一、网页版
+
+线上地址：<https://study-hub-seven-puce.vercel.app>
+
+### 它不是重写的，是同一套源码
+
+给网页版重写一份是最省事的做法，也是最糟的 —— 两份实现会立刻开始漂移。
+「改了桌面版忘了同步网页版」这类 bug 最难发现，因为**两条路都能跑，只是行为不一样**。
+
+所以做法是「把平台相关的那一小块抽出去」：
+
+```
+src/shared/api-surface.js    渲染层能看到的 94 个方法 —— 唯一真值
+src/main/ipc.js              90 个 handler，签名是 createHandlers(ctx, host)
+src/main/host-electron.js    Electron 适配器（原生对话框 / shell / BrowserWindow）
+web/host-browser.js          浏览器适配器（下载 / <input type=file> / Notification）
+preload.js                   精简成 31 行的薄适配器
+```
+
+数据层能**原封不动**搬过来，是因为 `store.js` 的 Node 依赖极小：
+`path.join` + 9 个 `fs` 函数 + `crypto.randomBytes`。
+`web/shims/vfs.js` 用 localStorage 实现了一个**同步**迷你文件系统，
+于是 store 的原子写、滚动备份、结构迁移在两端完全一致。
+
+渲染层是**复制**而不是重写：`web/build.js` 读 `src/renderer/index.html`
+做三处替换（CSP、标题、在渲染层之前插入 `bundle.js`），其余原样。
+
+### 打包器是自己写的（`web/build.js`，约 200 行）
+
+不上 webpack / esbuild：这个项目「零构建、拷到哪都能跑」是最重要的性质，
+引入一整套工具链会让它失效。而需要的功能极窄 ——
+本地相对 `require` + 几个核心模块垫片，一个模块注册表就够了。
+
+### 怎么证明两端行为一致
+
+`web/verify.js` 用 CDP（`tools/cdp.js`，基于 Node 22 内置的 `WebSocket`，**零依赖**）
+驱动无头 Chrome，跑的**不是另一套测试**，而是桌面版那份 `src/main/journey.js`
+的同一批 19 项界面断言：
+
+```sh
+npm run verify:web
+```
+
+实测结果（本地与线上各一次）：**19/19 通过、控制台零错误**。
+
+### 网页版的能力差异（如实声明，不假装实现）
+
+| 能力 | 桌面版 | 网页版 |
+| --- | --- | --- |
+| 专注 / 计划 / 资料 / 复习 / 统计 / 复盘 | ✅ | ✅ |
+| 数据持久化 | 本机 JSON 文件 | 浏览器 localStorage（约 5MB，实测一份数据 ~40KB） |
+| 备份与恢复 | 每天一份，保留 14 份 | ✅ 备份在虚拟文件系统里 |
+| 导入本地文件 / 扫描文件夹 | ✅ | ❌ 浏览器不允许读本机路径（可用「写笔记」或「添加链接」） |
+| 应用内预览本地文件 / PDF | ✅ | ❌ 没有本机文件可读 |
+| 导出 / 导入数据 | 原生保存 / 打开对话框 | ✅ 浏览器下载 / 上传 |
+| 系统通知 | ✅ | ✅（需授权；首次点「测试通知」时才请求） |
+| 后台提醒守护（关掉也能提醒） | ✅ launchd / schtasks | ❌ 标签页关了就停了 |
+| 全局快捷键 / 菜单栏托盘 | ✅ | ❌ 浏览器没有这些概念 |
+| 一键清空 / 恢复出厂 | ✅ | ✅ 并连带清空 localStorage |
+
+做不到的能力通过 `host.capabilities` 传给界面，前端据此隐藏或禁用入口 ——
+**比让用户点下去才发现报错要好**。
+
+### 部署
+
+```sh
+npm run deploy:web
+```
+
+`vercel.json` 里 `installCommand` 是空的 —— 因为 `web/build.js` 只用 Node 标准库，
+不需要装任何依赖（避免 Vercel 去装 245MB 的 Electron 依赖）。
