@@ -14,8 +14,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { dayKey, addDays, parseDayKey } = require('./util');
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const MAX_BACKUPS = 14;
+
+/** 每个学科空间内部的集合 —— 这些数据按空间物理隔离 */
+const TENANT_COLLS = ['subjects', 'materials', 'plans', 'sessions', 'reminders', 'reviews'];
+const LEVELS = ['undergrad', 'grad', 'any'];
 
 function uid(prefix = '') {
   return prefix + crypto.randomBytes(6).toString('hex');
@@ -62,10 +66,26 @@ function defaultProfile() {
   };
 }
 
-function defaultDB() {
+/* ------------------------------------------------------------------ *
+ * 多租户（学科空间）
+ *
+ * 一个「学科空间」＝ 一个独立的学习库：自己的科目、资料、计划、
+ * 学习记录、提醒、复习队列，连目标与番茄钟设置都是独立的。
+ *
+ * 🔴 隔离方式是**物理隔离**：文件里每个空间占一个独立的 libs[id] 条目，
+ *    内存里 store.db 任何时刻只指向其中一个。
+ *    于是 analytics / ipc / 渲染层**都不需要**加租户过滤 —— 拿到的数据
+ *    天然只有当前空间的。
+ *
+ *    反面做法是「每行加 tenantId，读的时候记得过滤」。那样每新增一个查询
+ *    都要多问一次「我过滤了吗」，漏一处就是跨空间串数据；而这类 bug
+ *    在只有单空间的测试里永远看不出来。隔离要靠结构，不能靠自觉。
+ * ------------------------------------------------------------------ */
+
+/** 一个学科空间的库。结构与 v4 时代完全相同，所以数据层代码一行都不用改。 */
+function defaultLib() {
   return {
     version: SCHEMA_VERSION,
-    createdAt: nowISO(),
     profile: defaultProfile(),
     subjects: [],
     materials: [],
@@ -75,7 +95,58 @@ function defaultDB() {
     reviews: [],
     timer: null,
     scheduler: { lastFired: {}, overrunAt: 0, breakOverrunAt: 0, breakOverrunStage: 0 },
-    meta: { demo: false, lastOpenAt: null, openCount: 0, lastBackupAt: null, daemonSeq: 0 }
+    meta: { demo: false, seeded: false, lastOpenAt: null, openCount: 0, lastBackupAt: null, daemonSeq: 0 }
+  };
+}
+
+/** 空间元数据。补齐字段、限长，避免外部传入的形状污染存储。 */
+function normalizeTenant(t) {
+  const src = t || {};
+  return {
+    id: String(src.id || uid('ten_')),
+    name: String(src.name || '未命名空间').slice(0, 48),
+    /** 主要学科 / 领域名，如「生物信息学」 */
+    field: String(src.field || '').slice(0, 40),
+    /** 阶段：undergrad（本科）/ grad（研究生）/ any（不限） */
+    level: LEVELS.includes(src.level) ? src.level : 'any',
+    /** cross（跨学科）/ discipline（单一学科）/ custom（自建） */
+    kind: src.kind || 'custom',
+    /** 交叉的母学科，如 ['生物学','计算机科学','统计学'] */
+    parents: Array.isArray(src.parents) ? src.parents.slice(0, 5).map((x) => String(x).slice(0, 24)) : [],
+    blurb: String(src.blurb || '').slice(0, 300),
+    color: src.color || '#2563eb',
+    /** 由哪个模板创建（空字符串＝手工创建） */
+    templateId: src.templateId || '',
+    createdAt: src.createdAt || nowISO(),
+    archived: !!src.archived
+  };
+}
+
+function defaultTenant(over = {}) {
+  return normalizeTenant(Object.assign({
+    id: 'ten_default',
+    name: '我的学习',
+    field: '综合',
+    level: 'any',
+    kind: 'custom',
+    blurb: '默认的学科空间。到「学科空间」页可以从 12 个跨学科模板里新建更多。',
+    color: '#2563eb'
+  }, over));
+}
+
+/** 整份文件：空间列表 + 各自的库 + 当前激活的空间 */
+function defaultDB() {
+  const t = defaultTenant();
+  return {
+    version: SCHEMA_VERSION,
+    createdAt: nowISO(),
+    activeTenantId: t.id,
+    tenants: [t],
+    libs: { [t.id]: defaultLib() },
+    /* 守护进程的通知序号是**跨空间**的（守护进程是同一个进程、同一个日志），
+       所以它属于文件级而不是某个空间的库 —— 放空间里会导致
+       「切换空间后同一批守护通知被当成新的再导一次」。 */
+    daemon: { seq: 0 }
   };
 }
 
@@ -83,9 +154,10 @@ function defaultDB() {
  * 迁移
  * ------------------------------------------------------------------ */
 
-/** 把任意版本的旧库补齐成当前结构。只做结构性补齐，不猜业务数据。 */
-function migrate(db) {
-  const fresh = defaultDB();
+/** 把任意版本的**单个库**补齐成当前结构。只做结构性补齐，不猜业务数据。 */
+function migrateLib(input) {
+  const db = input && typeof input === 'object' ? input : {};
+  const fresh = defaultLib();
   const out = Object.assign({}, fresh, db);
 
   // profile：逐层合并，保证新增开关项有默认值
@@ -153,6 +225,57 @@ function migrate(db) {
   return out;
 }
 
+/**
+ * 把任意版本的**整份文件**补齐成当前结构。
+ *
+ * v4 及以前是「单库」结构（文件顶层直接就是 subjects/materials/...）。
+ * 这里把它原样包成一个名为「我的学习」的空间 —— 老数据一条不丢，
+ * 用户升级后打开看到的就是原来那份数据，只是多了「可以再建空间」的能力。
+ */
+function migrateRaw(input) {
+  const src = input && typeof input === 'object' ? input : {};
+
+  if (src.libs && typeof src.libs === 'object' && src.activeTenantId) {
+    const libs = {};
+    for (const [id, lib] of Object.entries(src.libs)) libs[String(id)] = migrateLib(lib);
+    let tenants = Array.isArray(src.tenants) ? src.tenants.map(normalizeTenant) : [];
+    // 两端可能不一致（手工改过文件、或某次写入中断）：以库为准补齐元数据，元数据没有库的直接丢掉
+    for (const id of Object.keys(libs)) {
+      if (!tenants.some((t) => t.id === id)) tenants.push(normalizeTenant({ id, name: id }));
+    }
+    tenants = tenants.filter((t) => libs[t.id]);
+    if (!tenants.length) {
+      const t = defaultTenant();
+      tenants = [t];
+      libs[t.id] = defaultLib();
+    }
+    let active = String(src.activeTenantId);
+    if (!libs[active]) active = tenants[0].id;
+    return {
+      version: SCHEMA_VERSION,
+      createdAt: src.createdAt || nowISO(),
+      activeTenantId: active,
+      tenants,
+      libs,
+      daemon: { seq: Number((src.daemon || {}).seq) || 0 }
+    };
+  }
+
+  const lib = migrateLib(src);
+  const t = defaultTenant({ createdAt: src.createdAt || (lib.meta && lib.meta.lastOpenAt) || nowISO() });
+  return {
+    version: SCHEMA_VERSION,
+    createdAt: src.createdAt || nowISO(),
+    activeTenantId: t.id,
+    tenants: [t],
+    libs: { [t.id]: lib },
+    daemon: { seq: Number((src.daemon || {}).seq) || 0 }
+  };
+}
+
+/** v4 时代的外部调用方（导入数据）拿到的是单个库，保留 migrate 这个名字做库级迁移 */
+const migrate = migrateLib;
+
 /* ------------------------------------------------------------------ *
  * Store
  * ------------------------------------------------------------------ */
@@ -162,10 +285,36 @@ class Store {
     this.dir = dataDir;
     this.file = path.join(dataDir, 'study-hub.json');
     this.backupDir = path.join(dataDir, 'backups');
-    this.db = defaultDB();
+    /** 整份文件：空间列表 + 每个空间的库 */
+    this.raw = defaultDB();
+    /** 当前空间（学科空间）的库。与 raw.libs[activeTenantId] 是**同一个对象**，不是副本。 */
+    this.db = this.raw.libs[this.raw.activeTenantId];
     this._timer = null;
     this._dirty = false;
     this._lastError = null;
+    this._inWithTenant = false;
+  }
+
+  /**
+   * 让 this.db 指向 raw.activeTenantId 对应的库。
+   * 索引指向一个不存在的空间时（被删了 / 文件被手工改坏）回落到第一个，
+   * 全都不可用时重建一个默认空间 —— 目标只有一个：永远不要出现「没有当前空间」的状态。
+   */
+  _bind() {
+    const libs = this.raw.libs;
+    if (!libs[this.raw.activeTenantId]) {
+      const first = Object.keys(libs)[0];
+      if (first) {
+        this.raw.activeTenantId = first;
+      } else {
+        const t = defaultTenant();
+        this.raw.tenants = [t];
+        this.raw.libs = { [t.id]: defaultLib() };
+        this.raw.activeTenantId = t.id;
+      }
+    }
+    this.db = this.raw.libs[this.raw.activeTenantId];
+    return this.db;
   }
 
   init() {
@@ -174,21 +323,22 @@ class Store {
     if (fs.existsSync(this.file)) {
       try {
         const raw = fs.readFileSync(this.file, 'utf8');
-        const parsed = JSON.parse(raw);
-        this.db = migrate(parsed);
+        this.raw = migrateRaw(JSON.parse(raw));
       } catch (err) {
         // 主文件读不出来：先把它挪到一边留证，再尝试最近一份备份
         this._lastError = `主数据文件损坏（${err.message}），已隔离并尝试从备份恢复`;
         const broken = this.file + '.broken-' + Date.now();
         try { fs.renameSync(this.file, broken); } catch (_) {}
-        this.db = this._restoreLatestBackup() || defaultDB();
+        this.raw = this._restoreLatestBackup() || defaultDB();
+        this._bind();
         this.save(true);
       }
     } else {
-      this.db = defaultDB();
+      this.raw = defaultDB();
       this.save(true);
     }
 
+    this._bind();
     this.db.meta.openCount = (this.db.meta.openCount || 0) + 1;
     this.db.meta.lastOpenAt = nowISO();
     this._rollBackupIfNeeded();
@@ -205,7 +355,7 @@ class Store {
       for (const f of files) {
         try {
           const parsed = JSON.parse(fs.readFileSync(path.join(this.backupDir, f), 'utf8'));
-          if (parsed && Array.isArray(parsed.sessions)) return migrate(parsed);
+          if (parsed && (parsed.libs || Array.isArray(parsed.sessions))) return migrateRaw(parsed);
         } catch (_) { /* 试下一份 */ }
       }
     } catch (_) {}
@@ -217,7 +367,8 @@ class Store {
     const target = path.join(this.backupDir, `study-hub-${today}.json`);
     if (fs.existsSync(target)) return;
     try {
-      fs.writeFileSync(target, JSON.stringify(this.db, null, 2), 'utf8');
+      // 备份整份文件（全部学科空间）—— 恢复时是整体回滚，语义比「只备份当前空间」简单且安全
+      fs.writeFileSync(target, JSON.stringify(this.raw, null, 2), 'utf8');
       this.db.meta.lastBackupAt = nowISO();
       const all = fs.readdirSync(this.backupDir).filter((f) => f.endsWith('.json')).sort();
       while (all.length > MAX_BACKUPS) {
@@ -253,8 +404,9 @@ class Store {
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     if (!immediate && !this._dirty) return;
     try {
+      // raw.libs[activeTenantId] 与 this.db 是同一个对象，所以这里不需要额外同步
       const tmp = this.file + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(this.db, null, 2), 'utf8');
+      fs.writeFileSync(tmp, JSON.stringify(this.raw, null, 2), 'utf8');
       fs.renameSync(tmp, this.file); // 原子替换
       this._dirty = false;
     } catch (err) {
@@ -305,6 +457,139 @@ class Store {
   replaceAll(coll, rows) {
     this.update((db) => { db[coll] = rows; }, { immediate: true });
     return rows;
+  }
+
+  /* ---------------- 学科空间（租户） ---------------- */
+
+  /** 空间元数据列表（不含各自的库） */
+  listTenants() {
+    return this.raw.tenants;
+  }
+
+  activeTenantId() {
+    return this.raw.activeTenantId;
+  }
+
+  activeTenant() {
+    return this.raw.tenants.find((t) => t.id === this.raw.activeTenantId) || null;
+  }
+
+  libOf(id) {
+    return this.raw.libs[id] || null;
+  }
+
+  tenantCount() {
+    return Object.keys(this.raw.libs).length;
+  }
+
+  /**
+   * 临时切到另一个空间执行**同步**逻辑，结束后切回。
+   *
+   * 🔴 只允许同步 fn。中途 await 会让 this.db 在别人（比如另一个提醒检查、
+   *    或者用户的一次点击）手里指向错误的库 —— 那正是「跨空间串数据」。
+   *    这里直接拦住重入和异步返回，宁可报错也不要静默写错地方。
+   */
+  withTenant(id, fn) {
+    if (this._inWithTenant) throw new Error('withTenant 不可重入');
+    if (!this.raw.libs[id]) throw new Error('学科空间不存在：' + id);
+    const prev = this.raw.activeTenantId;
+    this._inWithTenant = true;
+    this.raw.activeTenantId = id;
+    this._bind();
+    try {
+      const ret = fn(this.db);
+      if (ret && typeof ret.then === 'function') {
+        throw new Error('withTenant 只接受同步函数，不要传 async');
+      }
+      return ret;
+    } finally {
+      this.raw.activeTenantId = prev;
+      this._inWithTenant = false;
+      this._bind();
+    }
+  }
+
+  switchTenant(id) {
+    if (!this.raw.libs[id]) return { ok: false, message: '这个学科空间不存在' };
+    this.raw.activeTenantId = id;
+    this._bind();
+    this.db.meta.lastOpenAt = nowISO();
+    this.save(true);
+    return { ok: true, tenant: this.activeTenant() };
+  }
+
+  /** @param {object} meta 空间元数据 @param {object} [lib] 预置的库，不传则建空库 */
+  addTenant(meta, lib) {
+    const t = normalizeTenant(meta);
+    this.raw.tenants.push(t);
+    this.raw.libs[t.id] = lib ? migrateLib(lib) : defaultLib();
+    this.save(true);
+    return t;
+  }
+
+  updateTenant(id, patch) {
+    const t = this.raw.tenants.find((x) => x.id === id);
+    if (!t) return null;
+    Object.assign(t, normalizeTenant(Object.assign({}, t, patch, { id })));
+    this.save(true);
+    return t;
+  }
+
+  /** 删除一个空间。库里必须至少留一个 —— 否则界面会进入「没有空间」的死状态。 */
+  removeTenant(id) {
+    if (!this.raw.libs[id]) return { ok: false, message: '这个学科空间不存在' };
+    if (this.tenantCount() <= 1) return { ok: false, message: '至少要保留一个学科空间' };
+    delete this.raw.libs[id];
+    this.raw.tenants = this.raw.tenants.filter((t) => t.id !== id);
+    if (this.raw.activeTenantId === id) this.raw.activeTenantId = Object.keys(this.raw.libs)[0];
+    this._bind();
+    this.save(true);
+    return { ok: true, activeTenantId: this.raw.activeTenantId };
+  }
+
+  /** 用一份新的整库数据替换内存（导入整库 / 恢复备份用），随后重新绑定当前空间 */
+  replaceRaw(next) {
+    this.raw = migrateRaw(next);
+    this._bind();
+    this._dirty = true;
+    this.save(true);
+    return this.raw;
+  }
+
+  /** 守护进程通知序号（文件级，跨空间共用） */
+  daemonSeq() {
+    return (this.raw.daemon && this.raw.daemon.seq) || 0;
+  }
+
+  setDaemonSeq(n) {
+    this.raw.daemon = { seq: Number(n) || 0 };
+    this._dirty = true;
+    this.save(true);
+  }
+
+  /** 每个空间的概览（给「学科空间」页的卡片用）。不改变当前空间。 */
+  tenantOverview(id) {
+    const lib = this.raw.libs[id];
+    if (!lib) return null;
+    const sessions = lib.sessions || [];
+    const focusMin = sessions.reduce((a, s) => a + (s.minutes || 0), 0);
+    const activePlans = (lib.plans || []).filter((x) => x.status === 'active');
+    const tasks = activePlans.reduce((a, p) => a + (p.tasks || []).length, 0);
+    const doneTasks = activePlans.reduce((a, p) => a + (p.tasks || []).filter((t) => t.done).length, 0);
+    return {
+      id,
+      subjects: (lib.subjects || []).length,
+      materials: (lib.materials || []).length,
+      plans: activePlans.length,
+      tasks,
+      doneTasks,
+      sessions: sessions.length,
+      minutes: focusMin,
+      reviews: (lib.reviews || []).filter((r) => !r.archived && !r.mastered).length,
+      mastered: (lib.reviews || []).filter((r) => r.mastered && !r.archived).length,
+      lastAt: lib.meta.lastOpenAt || null,
+      demo: !!lib.meta.demo
+    };
   }
 }
 
@@ -527,4 +812,9 @@ function seedDB(store) {
   }, { immediate: true });
 }
 
-module.exports = { Store, defaultDB, defaultProfile, migrate, seedDB, uid, nowISO, SCHEMA_VERSION };
+module.exports = {
+  Store, seedDB, uid, nowISO,
+  SCHEMA_VERSION, TENANT_COLLS, LEVELS,
+  defaultDB, defaultLib, defaultProfile, defaultTenant, normalizeTenant,
+  migrate, migrateLib, migrateRaw
+};

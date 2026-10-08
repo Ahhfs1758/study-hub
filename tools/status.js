@@ -56,6 +56,29 @@ function daemonState(dir) {
   try { return JSON.parse(fs.readFileSync(path.join(dir, 'daemon-state.json'), 'utf8')); } catch (_) { return null; }
 }
 
+/**
+ * 把读到的文件归一化成「一组空间」。
+ * v5 是 { tenants, libs, activeTenantId }，v4 及更早是单库（顶层直接是 subjects…）。
+ * 这个脚本是给人「看一眼」用的，所以两种结构都得认 —— 否则升级后
+ * 在旧数据上跑会读到 undefined，报一堆「科目 undefined」（而其实文件没坏）。
+ */
+function spacesOf(raw) {
+  if (raw && raw.libs && typeof raw.libs === 'object') {
+    const list = raw.tenants || [];
+    return {
+      version: raw.version,
+      activeId: raw.activeTenantId,
+      list: Object.keys(raw.libs).map((id) => {
+        const t = list.find((x) => x.id === id) || {};
+        return { id, name: t.name || id, field: t.field || '', level: t.level || '', db: raw.libs[id] };
+      })
+    };
+  }
+  /* v4 老文件：显示成「我的学习」—— 那正是它升级后的名字，
+     写「单库结构」对用户是术语噪音，他关心的只是「我的数据在哪一个空间里」。 */
+  return { version: raw.version, activeId: '', list: [{ id: '', name: '我的学习', db: raw }] };
+}
+
 function main() {
   const args = process.argv.slice(2);
   const di = args.indexOf('--data-dir');
@@ -69,35 +92,60 @@ function main() {
     process.exit(0);
   }
 
-  const db = r.db;
+  const all = spacesOf(r.db);
   const today = U.dayKey();
-  const q = A.reviewQueue(db, today);
-  const tasks = A.tasksOn(db, today);
-  const ov = A.overview(db);
   const a = alive(dir);
   const ds = daemonState(dir);
+  const LEVEL = { undergrad: '本科', grad: '研究生', any: '通用' };
+
+  /** 逐空间取统计。analytics 只认「一个库」，所以这里逐个进去算 —— 不需要它知道租户。 */
+  const spaces = all.list.map((sp) => {
+    const db = sp.db;
+    const q = A.reviewQueue(db, today);
+    const tasks = A.tasksOn(db, today);
+    const ov = A.overview(db);
+    return {
+      id: sp.id,
+      name: sp.name,
+      field: sp.field,
+      level: LEVEL[sp.level] || sp.level || '',
+      active: sp.id === all.activeId || (!all.activeId && sp.id === ''),
+      demo: !!(db.meta && db.meta.demo),
+      counts: {
+        subjects: (db.subjects || []).length, materials: (db.materials || []).length,
+        plans: (db.plans || []).length, sessions: (db.sessions || []).length,
+        reminders: (db.reminders || []).length, reviews: (db.reviews || []).length
+      },
+      today: {
+        minutes: A.sumRange(db, today, today).minutes,
+        goalMin: (db.profile || {}).dailyGoalMin || 120,
+        tasksTotal: tasks.length,
+        tasksUndone: tasks.filter((x) => !x.done).length,
+        reviewDue: q.total,
+        reviewOverdue: q.overdue.length
+      },
+      streak: ov.streak.current,
+      weekScore: ov.score.score
+    };
+  });
+  const cur = spaces.find((x) => x.active) || spaces[0] || null;
 
   const out = {
     dataDir: dir,
     file: r.file,
     bytes: r.bytes,
     mtime: r.mtime.toISOString(),
-    schema: db.version,
-    demo: !!db.meta.demo,
-    counts: {
-      subjects: db.subjects.length, materials: db.materials.length, plans: db.plans.length,
-      sessions: db.sessions.length, reminders: db.reminders.length, reviews: db.reviews.length
-    },
-    today: {
-      minutes: A.sumRange(db, today, today).minutes,
-      goalMin: db.profile.dailyGoalMin,
-      tasksTotal: tasks.length,
-      tasksUndone: tasks.filter((x) => !x.done).length,
-      reviewDue: q.total,
-      reviewOverdue: q.overdue.length
-    },
-    streak: ov.streak.current,
-    weekScore: ov.score.score,
+    schema: all.version,
+    spaceCount: spaces.length,
+    activeSpaceId: all.activeId,
+    activeSpace: cur ? cur.name : null,
+    spaces,
+    // 顶层这几项保留「当前空间」的口径，方便脚本沿用旧字段
+    demo: cur ? cur.demo : false,
+    counts: cur ? cur.counts : {},
+    today: cur ? cur.today : {},
+    streak: cur ? cur.streak : 0,
+    weekScore: cur ? cur.weekScore : 0,
     app: a
       ? { pid: a.pid, heartbeatAgoSec: a.ageSec, running: a.processExists && !a.stale, stale: a.stale }
       : { running: false, note: '没有心跳文件' },
@@ -110,14 +158,23 @@ function main() {
   L.push('学习中心 · 当前状态（只读）');
   L.push('');
   L.push('数据：' + r.file);
-  L.push(`  schema v${db.version}${db.meta.demo ? '（含示例数据）' : ''} · ${(r.bytes / 1024).toFixed(1)} KB · 改于 ${r.mtime.toLocaleString('zh-CN')}`);
-  L.push(`  科目 ${out.counts.subjects} · 资料 ${out.counts.materials} · 计划 ${out.counts.plans} · 复习 ${out.counts.reviews} · 提醒 ${out.counts.reminders} · 记录 ${out.counts.sessions} 条`);
+  L.push(`  schema v${all.version} · ${(r.bytes / 1024).toFixed(1)} KB · 改于 ${r.mtime.toLocaleString('zh-CN')}`);
+  L.push(`  学科空间 ${spaces.length} 个${cur ? `，当前是「${cur.name}」` : ''}`);
   L.push('');
-  L.push('今天：');
-  L.push(`  已学 ${U.humanMin(out.today.minutes)} / 目标 ${U.humanMin(out.today.goalMin)}`);
-  L.push(`  任务 ${out.today.tasksTotal} 项（未完成 ${out.today.tasksUndone}）`);
-  L.push(`  待复习 ${out.today.reviewDue} 个${out.today.reviewOverdue ? `（逾期 ${out.today.reviewOverdue}）` : ''}`);
-  L.push(`  连续打卡 ${out.streak} 天 · 本周评分 ${out.weekScore}`);
+  L.push('各空间：');
+  spaces.forEach((sp) => {
+    const mark = sp.active ? '▸' : ' ';
+    L.push(`${mark} ${sp.name}${sp.level || sp.field ? `（${[sp.level, sp.field].filter(Boolean).join(' · ')}）` : ''}${sp.demo ? ' [示例数据]' : ''}`);
+    L.push(`    科目 ${sp.counts.subjects} · 资料 ${sp.counts.materials} · 计划 ${sp.counts.plans} · 复习 ${sp.counts.reviews} · 提醒 ${sp.counts.reminders} · 记录 ${sp.counts.sessions}`);
+    L.push(`    今日已学 ${U.humanMin(sp.today.minutes)}/${U.humanMin(sp.today.goalMin)} · 任务 ${sp.today.tasksTotal} 项（未完成 ${sp.today.tasksUndone}）· 待复习 ${sp.today.reviewDue} 个${sp.today.reviewOverdue ? `（逾期 ${sp.today.reviewOverdue}）` : ''}`);
+    L.push(`    连续 ${sp.streak} 天 · 本周评分 ${sp.weekScore}`);
+  });
+  L.push('');
+  L.push(`当前空间「${cur ? cur.name : '—'}」今日：`);
+  L.push(`  已学 ${U.humanMin(cur.today.minutes)} / 目标 ${U.humanMin(cur.today.goalMin)}`);
+  L.push(`  任务 ${cur.today.tasksTotal} 项（未完成 ${cur.today.tasksUndone}）`);
+  L.push(`  待复习 ${cur.today.reviewDue} 个${cur.today.reviewOverdue ? `（逾期 ${cur.today.reviewOverdue}）` : ''}`);
+  L.push(`  连续打卡 ${cur.streak} 天 · 本周评分 ${cur.weekScore}`);
   L.push('');
   L.push('运行状态：');
   L.push(out.app.running

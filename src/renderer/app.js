@@ -5,7 +5,11 @@
   const api = SH.api;
   const h = SH.h, F = SH.fmt;
 
+  const LEVEL_LABEL = { undergrad: '本科', grad: '研究生', any: '通用' };
+
   const NAV = [
+    { group: '空间' },
+    { id: 'spaces', label: '学科空间', icon: 'grid' },
     { group: '学习' },
     { id: 'dashboard', label: '仪表盘', icon: 'dashboard' },
     { id: 'focus', label: '专注', icon: 'timer' },
@@ -17,7 +21,7 @@
     { id: 'review', label: '监督复盘', icon: 'target' },
     { id: 'settings', label: '设置', icon: 'settings' }
   ];
-  const NAV_ORDER = ['dashboard', 'focus', 'plans', 'materials', 'srs', 'stats', 'review', 'settings'];
+  const NAV_ORDER = ['spaces', 'dashboard', 'focus', 'plans', 'materials', 'srs', 'stats', 'review', 'settings'];
 
   const MINI_R = 16, MINI_C = 2 * Math.PI * MINI_R;
 
@@ -109,7 +113,10 @@
     if (changed && typeof SH.views[view].onEnter === 'function') {
       try { SH.views[view].onEnter(); } catch (err) { console.error('onEnter 失败', view, err); }
     }
-    paintNav();
+    /* 这里**不**提前 paintNav：导航高亮与页面内容必须同时变化。
+       提前高亮会出现「侧栏已经指着新页面、内容还是旧的」这一瞬间，
+       和上面标题那个问题是同一类 —— 状态与内容不同步。
+       renderCurrent 的 finally 里会统一 paintNav，那时内容已经换好了。 */
     await renderCurrent();
   }
 
@@ -118,20 +125,36 @@
    * ------------------------------------------------------------------ */
   async function renderCurrent() {
     const view = SH.views[app.current];
-    if (!view || app.rendering) return;
+    if (!view) return;
+
+    /* 🔴 正在渲染时**不能直接 return** —— 那会让这次切换彻底丢失。
+       真实场景：第一页开始渲染（要几百毫秒）时用户又点了第二页。
+       第二页进来被 `return` 弹掉，而 app.current 已经在 go() 里改成第二页了 ——
+       结果是「导航高亮在第 2 项，内容还是第 1 项」，而且不会自己恢复，
+       得再点一次。这个 bug 是靠「截图截到了上一页」发现的。
+       正确做法：记一个待办，等这次渲染收尾后再跑一遍，保证最后一次意图生效。 */
+    if (app.rendering) { app._pendingRender = true; return; }
     app.rendering = true;
     const host = document.getElementById('view');
     const scroller = document.getElementById('content');
     const keepScroll = scroller.scrollTop;
 
-    document.getElementById('viewTitle').textContent = view.title;
-    const subEl = document.getElementById('viewSub');
-    subEl.textContent = typeof view.sub === 'function' ? view.sub(SH.state) : (view.sub || '');
-
     try {
       const extra = view.load ? await view.load(SH.state) : null;
       SH.clear(host);
       view.render(host, SH.state, extra);
+
+      /* 🔴 标题与副标题必须在**内容渲染之后**才更新。
+         早先它们写在 `await view.load()` 之前，于是加载那几百毫秒里
+         界面是自相矛盾的：标题已经写着新页面，内容还是旧页面。
+         用户切到「复习」时先看到「复习」两个字和上一页的图表，看着像卡死；
+         真机测试里更麻烦 —— 它「等标题变成新页面」然后就截图，
+         拍到的是旧内容（截图截错页，比断言失败更难发现）。
+         改成同帧更新：标题、副标题、内容一起换。 */
+      document.getElementById('viewTitle').textContent = view.title;
+      const subEl = document.getElementById('viewSub');
+      subEl.textContent = typeof view.sub === 'function' ? view.sub(SH.state) : (view.sub || '');
+
       /* 入场动画只在「切换到另一个页面」时播一次。
          reload（同一个页面重渲染，比如勾完任务后刷新）不播 —— 否则每勾一下
          整个页面就重新浮上来一次，高频操作时会变得很吵。 */
@@ -159,6 +182,11 @@
       await refreshDerived();
       paintNav();
       updateChrome();
+      // 期间有人要求过重绘（见上面那段说明）：现在补上，别把它丢掉
+      if (app._pendingRender) {
+        app._pendingRender = false;
+        await renderCurrent();
+      }
     }
   }
 
@@ -220,6 +248,101 @@
     }));
 
     paintMiniTimer(S.timer);
+    paintSpaceSwitch(S);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 学科空间切换器
+   * ------------------------------------------------------------------ */
+
+  function paintSpaceSwitch(S) {
+    const box = document.getElementById('spaceSwitch');
+    if (!box || !S) return;
+    const t = S.activeTenant || (S.tenants || [])[0];
+    if (!t) return;
+    const st = (S.tenantStats || {})[t.id] || {};
+    SH.clear(box);
+    box.appendChild(h('span', { class: 'ss-dot', style: { background: t.color } }));
+    box.appendChild(h('div', { class: 'ss-text' },
+      h('b', null, t.name),
+      h('span', null, `${LEVEL_LABEL[t.level] || '通用'} · 科目 ${st.subjects || 0} · 待复习 ${st.reviews || 0}`)));
+    box.appendChild(h('span', { class: 'ss-caret' }, '\u25bc'));
+    box.title = `${t.name}${t.field ? ' · ' + t.field : ''} —— 点这里切换学科空间`;
+    if (!box._bound) { box.addEventListener('click', openSpaceMenu); box._bound = true; }
+  }
+
+  let spacePop = null;
+
+  function closeSpaceMenu() {
+    if (!spacePop) return;
+    spacePop.remove();
+    spacePop = null;
+    document.removeEventListener('click', onOutsideClick, true);
+  }
+
+  function onOutsideClick(e) {
+    if (!spacePop) return;
+    if (spacePop.contains(e.target)) return;
+    if (e.target.closest && e.target.closest('#spaceSwitch')) return;
+    closeSpaceMenu();
+  }
+
+  function openSpaceMenu() {
+    if (spacePop) { closeSpaceMenu(); return; }
+    const S = SH.state;
+    const list = S.tenants || [];
+    const pop = h('div', { class: 'space-pop' });
+    pop.appendChild(h('div', { class: 'space-pop-head' }, `学科空间 · 共 ${list.length} 个`));
+
+    list.forEach((t) => {
+      const st = (S.tenantStats || {})[t.id] || {};
+      const on = t.id === S.activeTenantId;
+      pop.appendChild(h('div', {
+        class: 'space-item' + (on ? ' on' : ''),
+        title: t.blurb || '',
+        onClick: async () => {
+          closeSpaceMenu();
+          if (on) return;
+          const r = await api.tenants.switch(t.id);
+          if (r && r.ok === false) {
+            SH.toast({ title: '暂时不能切换', body: r.message, kind: 'warn', timeout: 6000 });
+            return;
+          }
+          await SH.app.refresh();
+          SH.toast({
+            title: `已切到「${t.name}」`,
+            body: `科目 ${st.subjects || 0} · 待复习 ${st.reviews || 0} · 累计 ${F.dur(st.minutes || 0)}`,
+            kind: 'ok',
+            timeout: 4000
+          });
+        }
+      },
+        h('span', { class: 'ss-dot', style: { background: t.color } }),
+        h('div', { class: 'si-body' },
+          h('b', null, t.name),
+          h('small', null, `${LEVEL_LABEL[t.level] || '通用'}${t.field ? ' · ' + t.field : ''} · 科目 ${st.subjects || 0}`)),
+        on ? h('span', { class: 'chip ok', style: { height: '17px', fontSize: '10px', padding: '0 6px' } }, '当前') : null));
+    });
+
+    pop.appendChild(h('div', { class: 'space-pop-foot' },
+      h('div', { class: 'space-item', onClick: () => { closeSpaceMenu(); go('spaces'); } },
+        SH.iconEl('grid', 15),
+        h('div', { class: 'si-body' },
+          h('b', null, '管理学科空间'),
+          h('small', null, '新建 · 重命名 · 从 15 个跨学科模板创建')))));
+
+    document.body.appendChild(pop);
+    const anchor = document.getElementById('spaceSwitch').getBoundingClientRect();
+    pop.style.left = Math.round(anchor.left) + 'px';
+    pop.style.top = Math.round(anchor.bottom + 6) + 'px';
+    // 超出视口就上翻，避免浮层被切掉
+    const rect = pop.getBoundingClientRect();
+    if (rect.bottom > window.innerHeight - 8) {
+      pop.style.top = Math.max(8, Math.round(anchor.top - rect.height - 6)) + 'px';
+    }
+    spacePop = pop;
+    // 延到下一个 tick 再挂 —— 否则这次点击自己就把浮层关掉了
+    setTimeout(() => document.addEventListener('click', onOutsideClick, true), 0);
   }
 
   function paintMiniTimer(st) {
@@ -351,7 +474,7 @@
         e.preventDefault();
         return;
       }
-      if (e.metaKey && !e.shiftKey && !e.altKey && /^[1-8]$/.test(e.key)) {
+      if (e.metaKey && !e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
         e.preventDefault();
         go(NAV_ORDER[Number(e.key) - 1]);
       }
@@ -360,6 +483,23 @@
 
   SH.app = {
     go, refresh, reload, startFocus,
+    /** 内部状态快照。给真机测试用 —— 「连续切视图丢帧」这类问题
+        只看最终画面无法判断是「第二次请求被丢了」还是「补跑没发生」，
+        必须把 current / rendering / pending 三个变量一起看。 */
+    _debug: () => ({
+      current: app.current,
+      rendering: app.rendering,
+      pending: !!app._pendingRender,
+      lastRendered: app._lastRendered,
+      hash: location.hash,
+      title: (document.getElementById('viewTitle') || {}).textContent || ''
+    }),
+    switchSpace: async (id) => {
+      const r = await api.tenants.switch(id);
+      if (r && r.ok === false) { SH.toast({ title: '暂时不能切换', body: r.message, kind: 'warn', timeout: 6000 }); return r; }
+      await refresh();
+      return r;
+    },
     previewById: (id) => SH.previewUI.byId(id),
     previewMaterial: (id, probe) => SH.previewUI.dispatch(id, probe),
     state: () => SH.state

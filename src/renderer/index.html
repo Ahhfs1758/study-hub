@@ -18,6 +18,11 @@
         </div>
       </div>
 
+      <!-- 学科空间切换器：多租户的入口。
+           放在最上面而不是藏进设置里 —— 「我现在在哪个空间」是随时需要确认的状态，
+           而且切换空间是高频动作（比如白天做课题、晚上补方法论课）。 -->
+      <div class="space-switch" id="spaceSwitch" title="切换学科空间"></div>
+
       <nav class="nav" id="nav"></nav>
 
       <div class="sidebar-foot">
@@ -66,6 +71,7 @@
   <script src="views/stats.js"></script>
   <script src="views/review.js"></script>
   <script src="views/settings.js"></script>
+  <script src="views/spaces.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

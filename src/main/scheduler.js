@@ -93,7 +93,8 @@ class Scheduler {
   syncDaemonLog() {
     const st = this.readDaemonState();
     if (!st || !Array.isArray(st.log) || !st.log.length) return 0;
-    const cursor = this.store.read().meta.daemonSeq || 0;
+    // 守护通知序号是文件级的（见 store.js 里 daemon 字段的说明）
+    const cursor = this.store.daemonSeq();
     const fresh = st.log.filter((e) => (e.seq || 0) > cursor);
     if (!fresh.length) return 0;
 
@@ -112,7 +113,7 @@ class Scheduler {
     if (this.notifier.history.length > 200) this.notifier.history.length = 200;
 
     const maxSeq = fresh.reduce((a, b) => Math.max(a, b.seq || 0), cursor);
-    this.store.update((db) => { db.meta.daemonSeq = maxSeq; }, { immediate: true });
+    this.store.setDaemonSeq(maxSeq);
     this.notifier.onActivate('history-imported', { count: fresh.length });
     return fresh.length;
   }
@@ -122,28 +123,42 @@ class Scheduler {
    * ------------------------------------------------------------------ */
 
   check() {
-    const db = this.store.read();
     const now = new Date();
 
     this.syncDaemonLog();
 
-    const items = rules.evaluate(db, { firedAt: this.mergedFired(), now });
     const fired = [];
-    for (const it of items) {
-      // 再查一次：本轮前面的规则可能刚刚标记过
-      if (this.mergedFired()[it.key] === U.dayKey(now)) continue;
-      const sent = this.notifier.send({
-        kind: it.kind,
-        title: it.title,
-        body: it.body,
-        route: it.route,
-        force: it.force,
-        silent: it.silent,
-        reason: it.reason
+    const spaces = this.store.listTenants();
+
+    /* 遍历**所有**学科空间：切到哪个空间都该收到它自己的提醒。
+       只看当前空间的话，你在「生物信息学」设的晚间提醒，
+       只要当时开着的是「金融工程」就永远不会响 —— 而且完全静默，
+       用户只会觉得「提醒好像不太灵」。 */
+    for (const t of spaces) {
+      this.store.withTenant(t.id, () => {
+        const db = this.store.read();
+        const items = rules.evaluate(db, { firedAt: this.mergedFired(), now });
+        for (const it of items) {
+          // 再查一次：本轮前面的规则可能刚刚标记过
+          if (this.mergedFired()[it.key] === U.dayKey(now)) continue;
+          const sent = this.notifier.send({
+            kind: it.kind,
+            title: it.title,
+            body: it.body,
+            route: it.route,
+            force: it.force,
+            silent: it.silent,
+            reason: it.reason
+          });
+          if (sent) {
+            this._mark(it.key);
+            fired.push(spaces.length > 1 ? `${t.name} · ${it.key}` : it.key);
+          }
+        }
       });
-      if (sent) { this._mark(it.key); fired.push(it.key); }
     }
 
+    // 计时器守卫与「当前正在跑的那一段」有关，只对当前空间跑一次
     this._checkTimerGuards(now);
 
     if (fired.length) this.notifier.onActivate('scheduler', { fired });

@@ -25,6 +25,21 @@ function buildApi({ invoke, on, getPathForFile }) {
   /* ---------------- 读 ---------------- */
   snapshot: () => invoke('app:snapshot'),
 
+  /* ---------------- 学科空间（多租户） ----------------
+     一个空间 = 一套独立的科目/资料/计划/记录/复习。
+     下面这些方法只管理空间本身；空间内部的增删改查仍然走
+     subjects / plans / … —— 它们的作用域永远是当前空间。 */
+  tenants: {
+    list: () => invoke('tenants:list'),
+    templates: () => invoke('tenants:templates'),
+    create: (data) => invoke('tenants:create', data),
+    fromTemplate: (templateId, level) => invoke('tenants:from-template', { templateId, level }),
+    update: (id, patch) => invoke('tenants:update', { id, patch }),
+    remove: (id) => invoke('tenants:remove', id),
+    switch: (id) => invoke('tenants:switch', id),
+    compare: () => invoke('tenants:compare')
+  },
+
   subjects: {
     list: () => invoke('subjects:list'),
     add: (data) => invoke('subjects:add', data),

@@ -15,7 +15,8 @@ const A = require('./analytics');
 const U = require('./util');
 const M = require('./materials');
 const P = require('./preview');
-const { uid, nowISO } = require('./store');
+const C = require('./curriculum');
+const { uid, nowISO, migrate, defaultLib } = require('./store');
 
 /**
  * 生成全部 IPC handler。
@@ -48,7 +49,16 @@ function createHandlers(ctx, host) {
     /** 前端据此决定要不要显示只有桌面版才有的入口（如「导入本地文件」） */
     capabilities: host.capabilities,
     demo: !!store.read().meta.demo,
-    lastError: store._lastError || null
+    lastError: store._lastError || null,
+
+    /* ---- 多租户（学科空间） ----
+       快照里带全量空间列表，前端切换器与「学科空间」页都从这里取，
+       不需要额外的往返。每个空间的统计量都很小（几个整数）。 */
+    activeTenant: store.activeTenant(),
+    activeTenantId: store.activeTenantId(),
+    tenantCount: store.tenantCount(),
+    tenants: store.listTenants(),
+    tenantStats: store.listTenants().reduce((m, t) => { m[t.id] = store.tenantOverview(t.id); return m; }, {})
   });
 
   const broadcast = () => host.send('app:data', snapshot());
@@ -59,6 +69,124 @@ function createHandlers(ctx, host) {
    * 应用
    * ------------------------------------------------------------------ */
   H['app:snapshot'] = () => snapshot();
+
+  /* ------------------------------------------------------------------ *
+   * 学科空间（多租户）
+   *
+   * 每个空间是一个**独立的学习库**（见 store.js 里那段说明）。这里的 handler
+   * 只负责空间的增删改查与切换，不碰空间内部的业务数据 —— 那些通道
+   * （subjects:* / plans:* / …）的作用域永远是「当前空间」，一行都不用改，
+   * 也就没有「忘了加过滤」这种可能。
+   * ------------------------------------------------------------------ */
+
+  const tenantList = () => store.listTenants().map((t) => Object.assign({}, t, {
+    active: t.id === store.activeTenantId(),
+    stats: store.tenantOverview(t.id)
+  }));
+
+  H['tenants:list'] = () => tenantList();
+
+  /** 模板目录：15 个跨学科领域 × 本科 / 研究生 */
+  H['tenants:templates'] = () => C.listTemplates();
+
+  H['tenants:create'] = (data) => {
+    const d = data || {};
+    const name = String(d.name || '').trim();
+    if (!name) return { ok: false, message: '给这个空间起个名字' };
+    const t = store.addTenant({
+      name,
+      field: d.field,
+      level: d.level,
+      kind: d.kind || 'custom',
+      parents: d.parents,
+      blurb: d.blurb,
+      color: d.color
+    });
+    // 建完直接切过去：留在原来的空间会让人以为没建成功
+    store.switchTenant(t.id);
+    broadcast();
+    return { ok: true, tenant: t, tenants: tenantList() };
+  };
+
+  H['tenants:from-template'] = (data) => {
+    const d = data || {};
+    let made;
+    try {
+      made = C.instantiate(d.templateId, d.level);
+    } catch (err) {
+      return { ok: false, message: err.message };
+    }
+    const t = store.addTenant(made.meta, made.lib);
+    store.switchTenant(t.id);
+    broadcast();
+    return {
+      ok: true,
+      tenant: t,
+      created: {
+        subjects: made.lib.subjects.length,
+        materials: made.lib.materials.length,
+        plans: made.lib.plans.length,
+        tasks: made.lib.plans.reduce((a, pl) => a + pl.tasks.length, 0),
+        reviews: made.lib.reviews.length
+      }
+    };
+  };
+
+  H['tenants:update'] = ({ id, patch }) => {
+    const t = store.updateTenant(id, patch);
+    if (!t) return { ok: false, message: '这个学科空间不存在' };
+    broadcast();
+    return { ok: true, tenant: t };
+  };
+
+  H['tenants:remove'] = (id) => {
+    const r = store.removeTenant(id);
+    broadcast();
+    return r;
+  };
+
+  H['tenants:switch'] = (id) => {
+    if (id === store.activeTenantId()) return { ok: true, already: true };
+    /* 🔴 专注进行中禁止切换。
+       计时器状态在内存里，而专注记录会写进**当前**空间 ——
+       这时候切走，这一段的时长与科目就会记到另一个学科名下，而且很难发现。 */
+    const st = timer.getState();
+    if (st && st.running) return { ok: false, message: '专注正在进行，先结束这一段再切换空间' };
+    const r = store.switchTenant(id);
+    if (r.ok) broadcast();
+    return r;
+  };
+
+  /**
+   * 跨空间对比：把每个空间放到同一把尺子上量。
+   *
+   * 用 withTenant 逐个进入再取统计 —— 这样每个空间的数字都是用它自己的
+   * 数据算出来的，不需要在 analytics 里加租户参数。
+   */
+  H['tenants:compare'] = () => store.listTenants().map((t) => {
+    const live = store.withTenant(t.id, () => {
+      const lib = store.read();
+      const days = A.dailySeries(lib, 7);
+      const ov = A.overview(lib);
+      return {
+        last7: days.reduce((a, d) => a + (d.minutes || 0), 0),
+        todayMin: ov.todayMinutes || 0,
+        goal: lib.profile.dailyGoalMin || 120,
+        streak: (ov.streak && ov.streak.current) || 0,
+        score: (ov.score && ov.score.score) || 0
+      };
+    });
+    const st = store.tenantOverview(t.id) || {};
+    return Object.assign({
+      id: t.id,
+      name: t.name,
+      field: t.field,
+      level: t.level,
+      color: t.color,
+      parents: t.parents,
+      active: t.id === store.activeTenantId()
+    }, st, live);
+  });
 
   /* ------------------------------------------------------------------ *
    * 科目
@@ -751,9 +879,11 @@ function createHandlers(ctx, host) {
   H['system:export-data'] = async () => {
     // 语义化调用：桌面版弹保存框写文件，网页版触发浏览器下载。
     // 刻意不暴露「保存对话框」这种平台概念 —— 否则网页端只能假装实现。
+    const t = store.activeTenant();
+    const safe = String(t ? t.name : '学习中心').replace(/[\\/:*?"<>|]/g, '_').slice(0, 24);
     return host.saveText({
-      title: '导出学习数据',
-      fileName: `study-hub-${U.dayKey()}.json`,
+      title: '导出当前学科空间的数据',
+      fileName: `study-hub-${safe}-${U.dayKey()}.json`,
       text: JSON.stringify(store.read(), null, 2)
     });
   };
@@ -766,14 +896,28 @@ function createHandlers(ctx, host) {
     if (!picked || picked.canceled) return { ok: false };
     try {
       const parsed = JSON.parse(picked.text);
-      if (!parsed || !Array.isArray(parsed.sessions)) throw new Error('文件结构不对，缺少 sessions 数组');
       store.flush();
       fs.copyFileSync(store.file, path.join(store.backupDir, `pre-import-${Date.now()}.json`));
-      const { migrate } = require('./store');
+
+      // 整库文件（含全部学科空间）：整体替换
+      if (parsed && parsed.libs && typeof parsed.libs === 'object') {
+        store.replaceRaw(parsed);
+        broadcast();
+        return { ok: true, scope: 'all' };
+      }
+
+      // 单空间文件：只替换当前空间的内容，其它空间不受影响
+      if (!parsed || !Array.isArray(parsed.sessions)) throw new Error('文件结构不对，缺少 sessions 数组');
       const next = migrate(parsed);
-      store.update((db) => { Object.assign(db, next); }, { immediate: true });
+      /* 原地改（逐键删除再赋值），不能 `db = next` ——
+         store.db 与 raw.libs[active] 是同一个引用，整个替换会让它指向一个
+         不再被保存的对象：界面看着有数据，重启就没了。 */
+      store.update((db) => {
+        for (const k of Object.keys(db)) delete db[k];
+        Object.assign(db, next);
+      }, { immediate: true });
       broadcast();
-      return { ok: true };
+      return { ok: true, scope: 'one', space: (store.activeTenant() || {}).name };
     } catch (err) {
       return { ok: false, message: err.message };
     }
@@ -804,8 +948,13 @@ function createHandlers(ctx, host) {
   H['system:reset-all'] = () => {
     store.flush();
     fs.copyFileSync(store.file, path.join(store.backupDir, `pre-reset-${Date.now()}.json`));
-    const { defaultDB } = require('./store');
-    store.update((db) => { Object.assign(db, defaultDB()); }, { immediate: true });
+    const fresh = defaultLib();
+    /* 只重置**当前学科空间**，其它空间原样保留。
+       同样必须原地改：换对象会让 this.db 脱钩（见上面 import 的说明）。 */
+    store.update((db) => {
+      for (const k of Object.keys(db)) delete db[k];
+      Object.assign(db, fresh);
+    }, { immediate: true });
     broadcast();
     return true;
   };
@@ -830,11 +979,11 @@ function createHandlers(ctx, host) {
       if (!fs.existsSync(full)) return { ok: false, message: '备份文件不存在' };
       store.flush();
       fs.copyFileSync(store.file, path.join(store.backupDir, `pre-restore-${Date.now()}.json`));
-      const { migrate } = require('./store');
-      const next = migrate(JSON.parse(fs.readFileSync(full, 'utf8')));
-      store.update((db) => { Object.assign(db, next); }, { immediate: true });
+      /* 备份里是**整份文件**（含全部学科空间）；v4 时代的老备份是单库，
+         replaceRaw 会把它迁移成「一个空间」再装回去。 */
+      store.replaceRaw(JSON.parse(fs.readFileSync(full, 'utf8')));
       broadcast();
-      return { ok: true };
+      return { ok: true, spaces: store.tenantCount() };
     } catch (err) {
       return { ok: false, message: err.message };
     }

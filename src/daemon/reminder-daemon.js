@@ -107,6 +107,31 @@ function appIsAlive(aliveFile) {
   }
 }
 
+/**
+ * 把读到的文件归一化成「一组待检查的空间」。
+ *
+ * v5 文件是 { tenants, libs, activeTenantId }，每个空间一个独立库；
+ * v4 及更早是单库结构（顶层直接就是 reminders / plans / …）。
+ *
+ * 🔴 为什么要遍历**全部**空间而不是只看当前激活的那个：
+ *    应用关掉之后，守护进程是唯一的提醒来源。如果只处理最后打开的空间，
+ *    用户在别的空间设的提醒就永远不会响，而且没有任何提示。
+ *
+ * 已触发记录的键会加上「空间 id::」前缀 —— 否则两个空间里同名的规则键
+ * （比如 task_warn、streak_warn 这种固定键）会互相顶掉，
+ * 表现为「A 空间发过之后，B 空间同一条规则当天就再也不发了」。
+ */
+function spacesOf(raw) {
+  if (raw && raw.libs && typeof raw.libs === 'object') {
+    const list = raw.tenants || [];
+    return Object.keys(raw.libs).map((id) => {
+      const t = list.find((x) => x.id === id);
+      return { id, name: (t && t.name) || id, db: raw.libs[id] };
+    });
+  }
+  return [{ id: '', name: '', db: raw }];
+}
+
 /* ------------------------------------------------------------------ *
  * 主流程
  * ------------------------------------------------------------------ */
@@ -128,6 +153,8 @@ async function run(opts) {
     return result;
   }
 
+  const spaces = spacesOf(db);
+
   const state = loadState(stateFile);
   const now = new Date();
 
@@ -142,6 +169,8 @@ async function run(opts) {
       lastRunAt: state.lastRunAt,
       lastError: state.lastError,
       lastFiredCount: state.lastFiredCount,
+      spaces: spaces.map((sp) => sp.name || '(单库)'),
+      spaceCount: spaces.length,
       firedKeys: Object.keys(state.fired).length,
       logEntries: state.log.length,
       seq: state.seq,
@@ -167,7 +196,23 @@ async function run(opts) {
 
   let items = [];
   try {
-    items = rules.evaluate(db, { firedAt: state.fired, now });
+    for (const sp of spaces) {
+      const prefix = sp.id ? sp.id + '::' : '';
+      /* 把全局的已触发表投影成「这个空间视角」的一份：只留自己的前缀并去掉它，
+         这样 rules 内部的「今天是否已发过」判断仍然准确
+         （否则每轮都会重新判定为「未发过」，白算一遍）。 */
+      const scoped = {};
+      for (const [k, v] of Object.entries(state.fired)) {
+        if (prefix) {
+          if (k.startsWith(prefix)) scoped[k.slice(prefix.length)] = v;
+        } else if (!k.includes('::')) {
+          scoped[k] = v;
+        }
+      }
+      for (const it of rules.evaluate(sp.db, { firedAt: scoped, now })) {
+        items.push(Object.assign({}, it, { key: prefix + it.key, space: sp.name || '' }));
+      }
+    }
   } catch (err) {
     result.errors.push('规则评估失败：' + String(err && err.stack || err));
     state.runs += 1;
@@ -192,6 +237,7 @@ async function run(opts) {
       title: it.title,
       body: it.body,
       route: it.route,
+      space: it.space || '',
       reason: it.reason,
       delivered: sent.ok,
       via: sent.via,

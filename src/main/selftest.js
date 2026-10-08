@@ -15,7 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const VIEWS = ['dashboard', 'focus', 'plans', 'materials', 'srs', 'stats', 'review', 'settings'];
+const VIEWS = ['dashboard', 'focus', 'plans', 'materials', 'srs', 'stats', 'review', 'settings', 'spaces'];
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -73,6 +73,13 @@ async function run(ctx, outDir) {
   });
 
   await sleep(2500);
+
+  /* 关掉入场动画，让每一张截图都落在**稳定终态**上。
+     不关的话截图会拍在 riseIn 的首帧（opacity: 0）——
+     拍出来是一片空白，看起来像界面坏了，实际只是拍早了。
+     这一条要放在截图之前、所有断言之前。 */
+  await evalJs("document.documentElement.classList.add('no-anim'); true", 5000, 'no-anim');
+  await sleep(320);
 
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -686,6 +693,17 @@ async function run(ctx, outDir) {
       readDb: async () => store.read(),
       shot: async (name) => {
         try {
+          /* 🔴 截图前必须等「真的有新的一帧提交给合成器」。
+             capturePage 拿的是合成器最后提交的那一帧，而 DOM 的更新
+             （JS 立刻可见）与那次提交之间隔着一次合成 —— 不等的话，
+             截出来的是**上一个页面**。
+             这个坑很隐蔽：断言查 DOM，所以全绿；图却是旧页，
+             看起来像「界面切不过去」，实际只是拍早了。
+             两次 rAF 保证跨过一个完整的合成周期，再留一点余量给光栅化。 */
+          await evalJs(
+            'new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 90))))',
+            4000, 'paint'
+          ).catch(() => {});
           const img = await wc.capturePage();
           const file = path.join(outDir, 'journey-' + name + '.png');
           fs.writeFileSync(file, img.toPNG());

@@ -156,6 +156,12 @@ window.__J = (function () {
       const host = document.getElementById('view');
       if (!host || !host.children.length) return false;
       if (title && txt(document.getElementById('viewTitle')) !== title) return false;
+      /* 导航高亮也必须已经跟过来。
+         paintNav 排在 await refreshDerived() 之后，所以「内容换好了」和
+         「侧栏指对了」之间有一个几百毫秒的窗口。只看内容就截屏的话，
+         会拍到「内容是新页、高亮还停在上一页」——看起来像 bug，实际是拍早了。 */
+      const active = document.querySelector('.nav-item.active');
+      if (active && active.dataset.view !== view) return false;
       if (want && want.text && !viewText().includes(want.text)) return false;
       if (want && want.sel) {
         const n = $$(want.sel).length;
@@ -186,6 +192,12 @@ async function run(ctx, outDir, deps) {
      这样同一套断言能在两个运行环境里跑 —— 这正是「网页版和桌面版行为一致」的证据，
      而不是靠人肉比对两边截图。 */
   const { evalJs, wait, shot, readDb } = deps;
+  /** 视图标题（截图核对用）—— 与 app.js 里的 title 保持一致 */
+  const TITLES = {
+    dashboard: '仪表盘', focus: '专注', plans: '学习计划', materials: '学习资料',
+    srs: '复习', stats: '时间统计', review: '监督复盘', settings: '设置', spaces: '学科空间'
+  };
+  const expectedTitle = (v) => TITLES[v] || v;
   if (typeof readDb !== 'function') throw new Error('journey 需要 deps.readDb');
   const results = [];
   let failures = 0;
@@ -675,12 +687,147 @@ async function run(ctx, outDir, deps) {
       db.version >= 4 && Array.isArray(db.subjects) && Array.isArray(db.reviews) && db.subjects.length >= 1,
       { info: { schema: db.version, 科目: db.subjects.length, 资料: db.materials.length, 计划: db.plans.length, 记录: db.sessions.length, 复习: db.reviews.length } });
 
+  }
+
+  /* ---------- 12b. 多租户（学科空间）----------
+     这一组的核心不是「功能能用」，而是**隔离性**：
+     一个空间的科目、记录绝不允许出现在另一个空间里。
+     这类缺陷在单空间测试里永远看不出来（只有一套数据，串了也看不出来），
+     所以必须专门造出两个空间来对撞。 */
+  {
+    const r = await run(`
+      const T = window.api.tenants;
+      const subj = () => window.api.subjects.list();
+      const tick = () => new Promise(r => setTimeout(r, 140));
+      const log = {};
+
+      const init = await T.list();
+      log.initCount = init.length;
+      const originId = (init.find(t => t.active) || {}).id;
+      log.originSubjects = (await subj()).length;
+
+      // 1) 新建空间：应当自动切过去，而且里面是空的（不继承任何东西）
+      const made = await T.create({ name: '自检·空间A', field: '自检领域', level: 'undergrad', color: '#0d9488' });
+      await tick();
+      log.createOk = !!(made && made.ok);
+      const aId = (made.tenant || {}).id;
+      log.switchedToNew = window.SH.state.activeTenantId === aId;
+      log.newIsEmpty = (await subj()).length === 0;
+
+      // 2) 在 A 里加一门独有课程
+      await window.api.subjects.add({ name: 'A 独有课程', color: '#0d9488' });
+      log.aSubjects = (await subj()).map(s => s.name);
+
+      // 3) 切回原空间：A 的课程绝不能出现在这里
+      await T.switch(originId); await tick();
+      log.originAfterBack = (await subj()).map(s => s.name);
+      log.noLeakIntoOrigin = !log.originAfterBack.includes('A 独有课程');
+      log.originUnchanged = log.originAfterBack.length === log.originSubjects;
+
+      // 4) 再切回 A：数据还在（切换不能丢数据）
+      await T.switch(aId); await tick();
+      log.aStillThere = (await subj()).some(s => s.name === 'A 独有课程');
+
+      // 5) 从模板创建一个空间：课程 / 计划 / 任务 / 复习都该被预置出来
+      const tplRes = await T.fromTemplate('bioinfo', 'grad');
+      await tick();
+      log.tplOk = !!(tplRes && tplRes.ok);
+      log.tplCreated = tplRes.created;
+      const bId = (tplRes.tenant || {}).id;
+      log.tplSubjects = (await subj()).length;
+      const plans = await window.api.plans.list();
+      log.tplPlans = plans.length;
+      log.tplTasks = plans[0] ? plans[0].tasks.length : 0;
+      log.tplMilestones = plans[0] ? plans[0].milestones.length : 0;
+      log.tplReviews = (await window.api.reviews.list()).length;
+      // 模板空间同样不该看到 A 的课程
+      log.tplIsolated = !(await subj()).some(s => s.name === 'A 独有课程');
+
+      // 6) 跨空间对比要覆盖到全部空间
+      const cmp = await T.compare();
+      log.compareCount = cmp.length;
+      log.compareHasNames = cmp.every(x => !!x.name);
+
+      // 7) 删掉 A：其它空间不受影响
+      const del = await T.remove(aId); await tick();
+      log.removeOk = !!(del && del.ok);
+      log.afterRemoveCount = (await T.list()).length;
+      log.bStill = (await subj()).length > 0;
+
+      // 8) 收尾：切回原空间，各项数据回到测试前的样子
+      await T.switch(originId); await tick();
+      log.backHome = window.SH.state.activeTenantId === originId;
+      log.homeSubjects = (await subj()).length;
+      log.originId = originId; log.bId = bId;
+      return log;
+    `, 'journey:tenants');
+
+    record('多租户：新建空间自动切换且为空、A 的课程不泄漏到其它空间',
+      !!(r && r.createOk && r.switchedToNew && r.newIsEmpty && r.noLeakIntoOrigin && r.originUnchanged),
+      { info: r && { 初始空间数: r.initCount, 新建后切过去: r.switchedToNew, 新空间为空: r.newIsEmpty, 原空间科目: r.originAfterBack, 无泄漏: r.noLeakIntoOrigin } });
+
+    record('多租户：切换回去数据仍在（切换不丢数据）',
+      !!(r && r.aStillThere && r.backHome && r.homeSubjects === r.originSubjects),
+      { info: r && { 'A 空间里的课程还在': r.aStillThere, '回到原空间': r.backHome, '原空间科目数': r.homeSubjects } });
+
+    record('多租户：从模板创建 → 课程 / 计划 / 任务 / 里程碑 / 复习全部预置',
+      !!(r && r.tplOk && r.tplSubjects >= 5 && r.tplPlans >= 1 && r.tplTasks >= 6 && r.tplMilestones >= 2 && r.tplReviews >= 5),
+      { info: r && { 生成: r.tplCreated, 科目: r.tplSubjects, 计划: r.tplPlans, 任务: r.tplTasks, 里程碑: r.tplMilestones, 复习: r.tplReviews } });
+
+    record('多租户：模板空间同样与已有空间隔离 + 跨空间对比覆盖全部空间',
+      !!(r && r.tplIsolated && r.compareCount >= 3 && r.compareHasNames),
+      { info: r && { 模板空间无泄漏: r.tplIsolated, 对比空间数: r.compareCount } });
+
+    record('多租户：删除空间不影响其它空间',
+      !!(r && r.removeOk && r.afterRemoveCount >= 2 && r.bStill),
+      { info: r && { 删除成功: r.removeOk, 剩余空间: r.afterRemoveCount, 当前空间有数据: r.bStill } });
+
     /* 走完全流程后的界面状态，留几张图 —— 这是「用户一路点下来会看到什么」的唯一证据，
-       比任何断言都直观（断言只能证明某一处对了，截图能看出整体对不对）。 */
-    for (const [view, name] of [['dashboard', 'dashboard'], ['srs', 'srs'], ['plans', 'plans']]) {
-      await run(`await window.__J.goto(${JSON.stringify(view)}); return { ok: true };`, 'shot-nav-' + view);
+       比任何断言都直观（断言只能证明某一处对了，截图能看出整体对不对）。
+       放在多租户组**之后**：这时库里同时存在「我的学习」与一个模板空间，
+       截出来的「学科空间」页才是真实的多空间样子，而不是只有一张卡片的空壳。 */
+    for (const [view, name] of [['dashboard', 'dashboard'], ['srs', 'srs'], ['plans', 'plans'], ['spaces', 'spaces']]) {
+      const shotRes = await run(`
+        const ok = await window.__J.goto(${JSON.stringify(view)});
+        // 再确认一次标题真的切过去了：截图截错页会让人以为界面坏了，
+        // 而且这种「静默截错」比断言失败更难发现（图是好的，只是不是那一页）
+        /* 连同「导航高亮在哪一项」一起记下来。
+           截图是给人看的最后一道证据，所以它自己也得可核查：
+           少了这个字段，看到一张「标题对、高亮不对」的图就只能靠肉眼猜。 */
+        const act = document.querySelector('.nav-item.active');
+        return { ok, title: window.__J.txt(document.getElementById('viewTitle')), nav: act ? act.dataset.view : '' };
+      `, 'shot-nav-' + view);
       if (deps.shot) await deps.shot(name);
+      record(`截图：${name}（标题与导航高亮一致）`,
+        !!(shotRes && shotRes.ok && shotRes.title === expectedTitle(view) && shotRes.nav === view),
+        { info: shotRes });
     }
+  }
+
+  /* ---------- 12c. 连续切视图不能丢帧 ----------
+     nav-item 的高亮与页面内容必须始终指同一个视图。
+     缺陷形态：第一页开始渲染（几百毫秒）时又点了第二页，第二次渲染被
+     「正在渲染中」直接 return 弹掉 —— 于是高亮在第 2 项、内容还是第 1 项，
+     而且不会自己恢复（除非再点一次）。这个 bug 是靠截图发现的。 */
+  {
+    const r = await run(`
+      const T = window.__J;
+      // 故意不 await 第一次：让它在渲染中途被第二次切换打断
+      window.SH.app.go('spaces');
+      await window.SH.app.go('plans');
+      await new Promise(r => setTimeout(r, 1200));
+      const active = document.querySelector('.nav-item.active');
+      return {
+        title: T.txt(document.getElementById('viewTitle')),
+        nav: active ? active.dataset.view : '',
+        hasPlanCard: document.getElementById('view').textContent.includes('计划时间线'),
+        hasSpaceCard: document.getElementById('view').textContent.includes('跨学科模板库'),
+        dbg: window.SH.app._debug()
+      };
+    `, 'journey:rapid-nav');
+    record('连续切视图不丢帧（内容与导航高亮一致）',
+      !!(r && r.title === '学习计划' && r.nav === 'plans' && r.hasPlanCard && !r.hasSpaceCard),
+      { info: r });
   }
 
   /* ---------- 13. 清空数据不留孤儿记录 ---------- */
@@ -706,7 +853,7 @@ async function run(ctx, outDir, deps) {
   /* ---------- 14. 全局：每个视图再走一遍，确认没有累积性破坏 ---------- */
   {
     const r = await run(`
-      const views = ['dashboard','focus','plans','materials','srs','stats','review','settings'];
+      const views = ['dashboard','focus','plans','materials','srs','stats','review','settings','spaces'];
       const bad = [];
       for (const v of views) {
         const ok = await window.__J.goto(v);

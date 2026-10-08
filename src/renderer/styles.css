@@ -656,6 +656,30 @@ table.tb.tight td:first-child, table.tb.tight th:first-child { padding-left: 12p
   .view-enter > *, .hb-fill, .bl-fill, .dot circle, .dvg-side i { animation: none !important; }
 }
 
+/* 真机自检期间关掉全部动画（selftest 会给 <html> 加上 .no-anim）。
+   🔴 这条不是「为了跑得快」，而是为了让截图可信：
+   .view-enter 的 riseIn 从 opacity: 0 开始，且 animation-fill-mode 是 both ——
+   所以渲染完成后还有约 480ms（最大延迟 140ms + 时长 340ms）内容是不可见的。
+   截图正好落在这一瞬间，拍到的是一个空白页面，看起来像界面坏了。
+   视觉验证要的是稳定的终态，不是动画的某一帧。 */
+html.no-anim .view-enter > *,
+html.no-anim .hb-fill,
+html.no-anim .bl-fill,
+html.no-anim .dot circle,
+html.no-anim .dvg-side i,
+html.no-anim .space-pop { animation: none !important; }
+
+/* 过渡也要关。导航高亮是 `transition: background .12s, color .12s` ——
+   切页那一瞬间，上一项的背景正在淡出、新一项的还没淡入，
+   截图正好落在这个 120ms 的窗口里，就会拍到「高亮留在上一页」的画面
+   （实测三张连拍都拍到了：仪表盘上高亮在「设置」、学习计划上在「复习」、
+   学科空间上在「学习计划」—— 每一项都恰好是前一个视图）。
+   这类「拍到了过渡中间帧」和拍在动画首帧是同一个坑：
+   验证视觉要的是终态，不是某一帧。 */
+html.no-anim *,
+html.no-anim *::before,
+html.no-anim *::after { transition: none !important; }
+
 /* 可交互的图形块：悬停时轻微抬起，暗示「可以点」 */
 .viz-clickable {
   border-radius: var(--radius-sm); padding: 6px; margin: -6px;
@@ -693,7 +717,71 @@ table.tb.tight td:first-child, table.tb.tight th:first-child { padding-left: 12p
   12%, 55% { background: var(--accent-weak); }
 }
 
-/* ---------------- 打印 ---------------- */
+/* ---------------- 学科空间（多租户） ---------------- */
+
+.space-switch {
+  display: flex; align-items: center; gap: 9px;
+  margin: 0 10px 8px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--card); cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+  position: relative;
+}
+.space-switch:hover { background: var(--accent-weak); border-color: var(--accent); }
+.ss-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px; }
+.ss-text { flex: 1; min-width: 0; }
+.ss-text b { display: block; font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-text span { display: block; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.ss-caret { font-size: 9px; color: var(--muted); flex: 0 0 auto; }
+
+/* 切换浮层：贴着切换器展开，像一个 popover 而不是居中弹窗 ——
+   切换空间是「顺手做一下」的动作，弹窗会打断浏览上下文。 */
+.space-pop {
+  position: fixed; z-index: 60; width: 276px; max-height: 72vh; overflow: auto;
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 18px 44px rgba(16, 22, 40, .18); padding: 6px;
+  animation: popIn .14s ease both;
+}
+@keyframes popIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
+.space-pop-head { padding: 7px 10px 5px; font-size: 10.5px; color: var(--muted); letter-spacing: .04em; }
+.space-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.space-item:hover { background: var(--accent-weak); }
+.space-item.on { background: var(--accent-weak); }
+.space-item .si-body { flex: 1; min-width: 0; }
+.space-item b { display: block; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.space-item small { color: var(--muted); font-size: 10.5px; }
+.space-pop-foot { border-top: 1px solid var(--border); margin-top: 5px; padding-top: 5px; }
+
+/* 空间卡片 */
+.space-card { position: relative; display: flex; flex-direction: column; gap: 11px; overflow: hidden; }
+.space-card .sc-stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; }
+.space-card.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+.space-card .sc-head { display: flex; align-items: flex-start; gap: 10px; }
+.space-card .sc-name { font-size: 14px; font-weight: 680; letter-spacing: -.2px; }
+.space-card .sc-field { font-size: 11.5px; color: var(--text-2); margin-top: 2px; }
+.space-card .sc-parents { display: flex; flex-wrap: wrap; gap: 4px; }
+.space-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.space-kpi { text-align: center; padding: 7px 4px; background: var(--bg-soft, #f7f8fc); border-radius: 8px; }
+.space-kpi b { display: block; font-size: 15px; font-weight: 680; letter-spacing: -.4px; font-variant-numeric: tabular-nums; }
+.space-kpi span { display: block; font-size: 10px; color: var(--muted); margin-top: 1px; }
+
+/* 模板卡片 */
+.tpl-card { display: flex; flex-direction: column; gap: 9px; }
+.tpl-card .tp-aka { font-size: 10.5px; color: var(--muted); font-weight: 500; }
+.tpl-card .tp-blurb { font-size: 11.5px; color: var(--text-2); line-height: 1.55;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.tpl-levels { display: flex; flex-direction: column; gap: 6px; }
+.tpl-btn { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: transparent;
+  cursor: pointer; font: inherit; transition: background .14s ease, border-color .14s ease; }
+.tpl-btn:hover { background: var(--accent-weak); border-color: var(--accent); }
+.tpl-btn:disabled { opacity: .5; cursor: default; }
+.tpl-btn .tb-lv { font-weight: 650; font-size: 12px; }
+.tpl-btn .tb-courses { font-size: 10.5px; color: var(--muted); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tpl-btn .tb-go { margin-left: auto; color: var(--accent); flex: 0 0 auto; }
+
+/* 打印 ---------------- */
 @media print {
   .sidebar, .topbar, .toasts { display: none !important; }
   .content { overflow: visible; padding: 0; }
