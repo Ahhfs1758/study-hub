@@ -532,6 +532,167 @@ table.tb.tight td:first-child, table.tb.tight th:first-child { padding-left: 12p
 }
 .pv-md { max-width: 760px; }
 
+/* ============================================================
+   可视化组件（viz.js 的配套样式）
+   原则：图形负责「一眼看懂」，数字负责「精确」。两者必须同时在场 ——
+   只有图形会让人猜，只有数字会让人累。
+   ============================================================ */
+
+.viz-empty {
+  padding: 22px 4px; text-align: center; color: var(--muted); font-size: 12.5px;
+}
+.viz-pointer { cursor: pointer; }
+.viz-split { display: flex; align-items: center; gap: 20px; }
+.viz-split > .viz-main { flex: 0 0 auto; }
+.viz-split > .viz-side { flex: 1; min-width: 0; }
+.viz-stack { display: flex; flex-direction: column; gap: 14px; }
+.viz-caption { font-size: 11.5px; color: var(--muted); margin-top: 8px; line-height: 1.6; }
+
+/* 图例：与图形并排，颜色点 + 名称 + 数值 + 占比 */
+.legend { display: flex; flex-direction: column; gap: 7px; }
+.legend-row {
+  display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+  padding: 5px 7px; border-radius: 7px; transition: background .13s ease;
+}
+.legend-row:hover { background: var(--surface-3); }
+.legend-row .lg-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend-row .lg-val { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); }
+.legend-row .lg-pct { width: 40px; text-align: right; font-size: 11.5px; color: var(--muted); }
+
+/* ---------------- 子弹图（目标 vs 实际） ---------------- */
+.bullets { display: flex; flex-direction: column; gap: 13px; }
+.bullet-row { display: flex; align-items: center; gap: 11px; }
+.bullet-row[role="button"] { cursor: pointer; }
+.bullet-row[role="button"]:hover .bl-label { color: var(--accent); }
+.bl-label { flex: 0 0 96px; font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bl-track {
+  position: relative; flex: 1; height: 11px; border-radius: 6px;
+  background: var(--surface-3); overflow: visible;
+}
+.bl-fill {
+  position: absolute; inset: 0 auto 0 0; border-radius: 6px;
+  transform-origin: left; animation: growX .55s cubic-bezier(.22,1,.36,1) both;
+}
+/* 目标刻度：一根穿过轨道的细线，比文字「目标 120 分钟」更省注意力 */
+.bl-target {
+  position: absolute; top: -4px; bottom: -4px; width: 2px; border-radius: 1px;
+  background: var(--text); opacity: .55;
+}
+.bl-value { flex: 0 0 auto; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bl-sub { flex: 0 0 auto; font-size: 11.5px; color: var(--muted); }
+
+/* ---------------- 横向条形 ---------------- */
+.hbars { display: flex; flex-direction: column; gap: 9px; }
+.hb-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+.hb-row[role="button"] { cursor: pointer; }
+.hb-row[role="button"]:hover .hb-label { color: var(--accent); }
+.hb-rank {
+  flex: 0 0 16px; height: 16px; border-radius: 5px; display: grid; place-items: center;
+  font-size: 10px; font-weight: 700; background: var(--surface-3); color: var(--muted);
+}
+.hb-label { flex: 0 0 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.hb-track { flex: 1; height: 9px; border-radius: 5px; background: var(--surface-3); overflow: hidden; }
+.hb-fill { display: block; height: 100%; border-radius: 5px; transform-origin: left; animation: growX .55s cubic-bezier(.22,1,.36,1) both; }
+.hb-value { flex: 0 0 52px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.hb-sub { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+
+/* ---------------- 双向对比条 ---------------- */
+.dvg-head, .dvg-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+.dvg-head { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+.dvg-h.pos { flex: 1; text-align: right; }
+.dvg-h.neg { flex: 1; }
+.dvg-h.label { flex: 0 0 92px; }
+.dvg-row { margin-bottom: 9px; font-size: 12.5px; }
+.dvg-side { flex: 1; display: flex; align-items: center; gap: 7px; }
+.dvg-side.left { justify-content: flex-end; }
+.dvg-side i {
+  display: block; height: 9px; border-radius: 5px; max-width: 100%;
+  transform-origin: var(--origin, right); animation: growX .5s cubic-bezier(.22,1,.36,1) both;
+}
+.dvg-side.left i { transform-origin: right; }
+.dvg-side.right i { transform-origin: left; }
+.dvg-side b { font-variant-numeric: tabular-nums; font-size: 12px; }
+.dvg-label {
+  flex: 0 0 92px; text-align: center; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---------------- 点阵 ---------------- */
+.dot circle {
+  transform-box: fill-box; transform-origin: center;
+  animation: dotIn .3s cubic-bezier(.34,1.56,.64,1) both;
+}
+
+/* ---------------- 带可视化的统计卡 ---------------- */
+.stat.with-viz { display: flex; align-items: center; gap: 14px; }
+/* flex: 1 1 auto 而不是 flex: 1 —— 后者是 flex-grow:1 flex-shrink:1 flex-basis:0，
+   basis 为 0 时文字会先被压到 0 再一格一格地换行，出现「从/未/打/开」这种竖排单字。 */
+.stat.with-viz .sv-body { flex: 1 1 auto; min-width: 0; }
+/* 指标名与大数字都不允许逐字换行，放不下就省略号 */
+.stat .k, .stat .v { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 带图形的卡片要给图形让出宽度，数值字号收一档。
+   26px 下「10 小时 25 分」约 150px，加上 46px 的环就超出卡片宽度了 ——
+   同一张卡缩到 21px 既能放下完整数值，又不至于显得比其它卡弱。 */
+.stat.with-viz .v { font-size: 21px; letter-spacing: -.5px; }
+.stat.with-viz .d { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 统计卡里的小图形不加动效会更稳：卡片本身有 hover 位移，双重动画会显得躁 */
+.stat .mini-viz { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+
+/* ---------------- 视图切换与卡片交互 ---------------- */
+@keyframes growX { from { transform: scaleX(0); } }
+@keyframes dotIn { from { transform: scale(.2); opacity: 0; } }
+@keyframes riseIn { from { opacity: 0; transform: translateY(7px); } }
+@keyframes fadeIn { from { opacity: 0; } }
+
+.view-enter > * { animation: riseIn .34s cubic-bezier(.22,1,.36,1) both; }
+.view-enter > *:nth-child(1) { animation-delay: 0ms; }
+.view-enter > *:nth-child(2) { animation-delay: 28ms; }
+.view-enter > *:nth-child(3) { animation-delay: 56ms; }
+.view-enter > *:nth-child(4) { animation-delay: 84ms; }
+.view-enter > *:nth-child(5) { animation-delay: 112ms; }
+.view-enter > *:nth-child(n+6) { animation-delay: 140ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .view-enter > *, .hb-fill, .bl-fill, .dot circle, .dvg-side i { animation: none !important; }
+}
+
+/* 可交互的图形块：悬停时轻微抬起，暗示「可以点」 */
+.viz-clickable {
+  border-radius: var(--radius-sm); padding: 6px; margin: -6px;
+  transition: background .14s ease, transform .14s ease; cursor: pointer;
+}
+.viz-clickable:hover { background: var(--surface-3); }
+.viz-clickable:active { transform: scale(.995); }
+
+/* 卡片：轻微抬起 + 边框加深，让「可点」与「纯展示」有区别 */
+.card { transition: box-shadow .16s ease, border-color .16s ease; }
+.card.hoverable:hover { box-shadow: var(--shadow-2); border-color: var(--border-strong); }
+
+/* 分段进度条（多状态占比：已完成 / 进行中 / 未开始） */
+.segbar { display: flex; height: 9px; border-radius: 5px; overflow: hidden; background: var(--surface-3); }
+.segbar > i { display: block; height: 100%; transition: width .35s ease; }
+.segbar > i + i { margin-left: 2px; }
+
+/* 环形进度 + 文字并排的紧凑块 */
+.ring-kpi { display: flex; align-items: center; gap: 12px; }
+.ring-kpi .rk-body { min-width: 0; }
+.ring-kpi .rk-title { font-size: 12.5px; color: var(--text-2); }
+.ring-kpi .rk-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+/* 图形区块的头（标题 + 右侧口径说明） */
+.viz-head {
+  display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px;
+}
+.viz-head h4 { margin: 0; font-size: 13px; font-weight: 650; }
+.viz-head .vh-note { font-size: 11.5px; color: var(--muted); margin-left: auto; }
+
+/* 下钻高亮：从图形跳到表格某一行时，用一次短促的底色闪烁把视线带过去 */
+.row-flash { animation: rowFlash 1.5s ease; }
+@keyframes rowFlash {
+  0%, 100% { background: transparent; }
+  12%, 55% { background: var(--accent-weak); }
+}
+
 /* ---------------- 打印 ---------------- */
 @media print {
   .sidebar, .topbar, .toasts { display: none !important; }

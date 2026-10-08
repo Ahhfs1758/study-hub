@@ -27,8 +27,9 @@
 
     render(root, S, x) {
       view._refs = {};
+      root.appendChild(todayStrip(S, x));
       root.appendChild(h('div', { class: 'grid g-1-2' },
-        h('div', { class: 'card timer-card' }, ...dialChildren(S)),
+        h('div', { class: 'card timer-card' }, ...dialChildren(S, x)),
         h('div', {}, settingsCard(S, x), materialQuickCard(S))));
       root.appendChild(h('h2', { class: 'section' }, `今天的学习记录（${F.dur(x.sessions.reduce((a, b) => a + b.minutes, 0))}）`));
       root.appendChild(sessionList(S, x.sessions));
@@ -38,16 +39,107 @@
   };
 
   /* ------------------------------------------------------------------ *
-   * 计时盘
+   * 今日概览：把「今天学了多久 / 什么时候学的 / 专注质量如何」用图形说清
    * ------------------------------------------------------------------ */
-  const R = 108, CIRC = 2 * Math.PI * R;
+  function todayStrip(S, x) {
+    const sessions = x.sessions.slice().reverse();   // 按时间正序
+    const total = sessions.reduce((a, b) => a + b.minutes, 0);
+    const goal = S.overview.dailyGoalMin || 0;
+    const HUE = SH.viz.HUE;
 
-  function dialChildren(S) {
+    // 把每段记录换算成「距零点的分钟」，交给 dayBand 排布
+    const blocks = sessions.map((s) => {
+      const st = new Date(s.start), en = new Date(s.end);
+      const sub = (S.db.subjects || []).find((z) => z.id === s.subjectId);
+      const from = st.getHours() * 60 + st.getMinutes();
+      const to = Math.max(from + 1, en.getHours() * 60 + en.getMinutes());
+      return {
+        from, to,
+        color: sub ? sub.color : '#8b96ab',
+        label: s.minutes >= 20 ? F.dur(s.minutes) : '',
+        title: `${F.pad2(st.getHours())}:${F.pad2(st.getMinutes())}–${F.pad2(en.getHours())}:${F.pad2(en.getMinutes())} · ${F.dur(s.minutes)}${sub ? ' · ' + sub.name : ''}`
+      };
+    });
+
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+    // 专注质量：只统计有评分的段，避免「手动补录没有评分」把均值拉低
+    const scored = sessions.filter((s) => s.focusScore != null);
+    const avgScore = scored.length ? Math.round(scored.reduce((a, b) => a + b.focusScore, 0) / scored.length) : null;
+    const interruptions = sessions.reduce((a, b) => a + (b.interruptions || 0), 0);
+    const longest = sessions.reduce((m, s) => Math.max(m, s.minutes || 0), 0);
+
+    const body = h('div', { class: 'card-body' });
+
+    // 一行式指标：进度环 + 三个关键值
+    const head = h('div', { class: 'viz-split', style: { marginBottom: '14px' } });
+    head.appendChild(h('div', { class: 'viz-main' }, SH.html(SH.viz.progressRing({
+      ratio: goal ? Math.min(1, total / goal) : (total ? 1 : 0),
+      size: 96, thickness: 10,
+      value: F.hm(total),
+      sub: goal ? `目标 ${F.hm(goal)}` : '未设目标',
+      color: total >= goal && goal ? HUE.ok : HUE.accent
+    }))));
+    const side = h('div', { class: 'viz-side viz-stack' });
+    side.appendChild(SH.vizHead('今日专注', `${sessions.length} 段 · ${goal && total >= goal ? '已达标' : goal ? `还差 ${F.dur(goal - total)}` : ''}`));
+    side.appendChild(SH.meterRow({ label: '单段最长', value: longest, max: Math.max(longest, 60), display: F.dur(longest), color: 'var(--info)' }));
+    side.appendChild(SH.meterRow({
+      label: '平均专注度', value: avgScore || 0, max: 100,
+      display: avgScore != null ? `${avgScore} 分` : '无评分',
+      tone: avgScore == null ? undefined : avgScore >= 85 ? 'ok' : avgScore >= 70 ? undefined : 'warn',
+      sub: interruptions ? `中断共 ${interruptions} 次` : ''
+    }));
+    head.appendChild(side);
+    body.appendChild(head);
+
+    body.appendChild(SH.vizHead('今天什么时候在学', '每块是一段专注，位置就是真实时间'));
+    body.appendChild(SH.html(SH.viz.dayBand({ blocks, nowMinutes, height: 74 })));
+    body.appendChild(h('div', { class: 'viz-caption' },
+      sessions.length
+        ? `红色竖线是现在（${F.pad2(now.getHours())}:${F.pad2(now.getMinutes())}）。空白的地方就是今天还没利用的时间。`
+        : '开始第一段专注后，这里会显示你今天的作息分布。'));
+
+    return h('div', { class: 'card' }, body);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 计时盘
+   *
+   * 轮次进度不放在表盘下面（一排小圆点容易被忽略），而是做成**外圈的分段环** ——
+   * 完成一轮就点亮一段。这样「这一轮番茄是第几个」「离长休息还有几次」
+   * 不用去看文字，扫一眼外圈就知道。
+   * ------------------------------------------------------------------ */
+  const CX = 130, CY = 130;
+  const R = 104, CIRC = 2 * Math.PI * R;      // 主进度环
+  const R2 = 122;                             // 外圈：轮次环
+
+  function polar(r, deg) {
+    const a = (deg * Math.PI) / 180;
+    return [CX + r * Math.cos(a), CY + r * Math.sin(a)];
+  }
+
+  function dialChildren(S, x) {
     const st = S.timer;
+    const rounds = Math.max(2, S.db.profile.pomodoro.roundsBeforeLong || 4);
     const label = h('div', { class: 'timer-phase' }, PHASE_LABEL[st.phase] || '准备就绪');
-    const ring = SH.html(`<svg viewBox="0 0 250 250" width="250" height="250">
-      <circle cx="125" cy="125" r="${R}" fill="none" stroke="#eef1f6" stroke-width="12"/>
-      <circle id="dialArc" cx="125" cy="125" r="${R}" fill="none" stroke="#3b5bfd" stroke-width="12"
+
+    // 外圈：按轮次数等分，每段留缺口，避免连成一根粗环
+    const segs = [];
+    for (let i = 0; i < rounds; i++) {
+      const a0 = (i * 360) / rounds - 90 + (360 / rounds) * 0.14;
+      const a1 = ((i + 1) * 360) / rounds - 90 - (360 / rounds) * 0.14;
+      const [x0, y0] = polar(R2, a0);
+      const [x1, y1] = polar(R2, a1);
+      const large = a1 - a0 > 180 ? 1 : 0;
+      segs.push(`<path d="M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${R2} ${R2} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}"
+        fill="none" stroke="#e9edf5" stroke-width="4.5" stroke-linecap="round"/>`);
+    }
+
+    const ring = SH.html(`<svg viewBox="0 0 260 260" width="260" height="260">
+      <g id="roundDots">${segs.join('')}</g>
+      <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="#eef1f6" stroke-width="12"/>
+      <circle id="dialArc" cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="#3b5bfd" stroke-width="12"
         stroke-linecap="round" stroke-dasharray="${CIRC.toFixed(1)} ${CIRC.toFixed(1)}" stroke-dashoffset="0"/>
     </svg>`);
     const num = h('div', { class: 'tnum', id: 'dialTime' }, '25:00');
@@ -55,13 +147,23 @@
     const center = h('div', { class: 'dial-center' }, num, sub);
     const dial = h('div', { class: 'timer-dial' }, ring, center);
 
-    const dots = h('div', { class: 'round-dots', id: 'roundDots' });
-
     const actions = h('div', { class: 'timer-actions', id: 'timerActions' });
-
     const meta = h('div', { class: 'focus-meta', id: 'timerMeta' });
 
-    const wrap = [label, dial, dots, actions, meta];
+    // 今日目标进度：放在表盘下方，和上方的大环形成「一轮 vs 一天」的呼应
+    const goalBar = (() => {
+      const total = (x.sessions || []).reduce((a, b) => a + b.minutes, 0);
+      const goal = S.overview.dailyGoalMin || 0;
+      if (!goal) return null;
+      const pct = Math.min(1, total / goal);
+      return h('div', { style: { width: '100%', marginTop: '16px' } },
+        h('div', { class: 'row', style: { justifyContent: 'space-between', fontSize: '11.5px', color: 'var(--muted)', marginBottom: '5px' } },
+          h('span', null, '今日目标'),
+          h('span', null, `${F.dur(total)} / ${F.dur(goal)}`)),
+        h('div', { class: 'progress' }, h('i', { style: { width: (pct * 100).toFixed(1) + '%' } })));
+    })();
+
+    const wrap = [label, dial, goalBar, actions, meta].filter(Boolean);
     setTimeout(() => { paintDial(S.timer); }, 0);
     return wrap;
   }
@@ -104,13 +206,13 @@
       sub.textContent = subj ? subj.name : (st.mode === 'stopwatch' ? '正计时 · 不设上限' : `${S.db.profile.pomodoro.focus} 分钟 · 番茄钟`);
     }
 
-    // 轮次点
+    // 外圈轮次：已完成的段点亮
     if (dots) {
-      const target = S.db.profile.pomodoro.roundsBeforeLong || 4;
-      SH.clear(dots);
-      for (let i = 0; i < target; i++) {
-        dots.appendChild(h('i', { class: i < (st.round % target) || (st.round > 0 && st.round % target === 0 && i < target && st.phase !== 'focus') ? 'on' : '' }));
-      }
+      const target = Math.max(2, S.db.profile.pomodoro.roundsBeforeLong || 4);
+      const doneRounds = st.round % target === 0 && st.round > 0 && st.phase !== 'focus' ? target : st.round % target;
+      [...dots.children].forEach((seg, i) => {
+        seg.setAttribute('stroke', i < doneRounds ? col : '#e9edf5');
+      });
     }
 
     // 按钮
@@ -125,7 +227,7 @@
         } else {
           actions.appendChild(h('button', { class: 'btn lg', onClick: async () => { await api.timer.pause(); } }, '暂停'));
         }
-        actions.appendChild(h('button', { class: 'btn lg', onClick: () => stopSession() }, st.paused ? '结束并记录' : '结束并记录'));
+        actions.appendChild(h('button', { class: 'btn lg', onClick: () => stopSession() }, '结束并记录'));
         actions.appendChild(h('button', { class: 'btn ghost lg', title: '标记一次分心', onClick: async () => {
           await api.timer.distraction();
           SH.toast({ title: '已记录一次分心', body: '这一笔会算进本段的专注度评分。', kind: 'info', timeout: 3000 });
@@ -257,7 +359,19 @@
           h('div', { class: 'li-sub' },
             `${s.mode === 'pomodoro' ? '番茄钟' : s.mode === 'stopwatch' ? '正计时' : '手动补录'}`,
             s.interruptions ? ` · 中断 ${s.interruptions} 次` : '')),
-        s.focusScore != null ? h('span', { class: 'chip ' + (s.focusScore >= 85 ? 'ok' : s.focusScore >= 70 ? '' : 'warn') }, `${s.focusScore} 分`) : null,
+        // 专注度用一小段条 + 数字：条负责比较，数字负责精确
+        s.focusScore != null
+          ? h('span', { class: 'row', style: { gap: '6px', flex: '0 0 auto' }, title: `本段专注度 ${s.focusScore} 分` },
+            h('span', { class: 'hb-track', style: { display: 'block', width: '46px' } },
+              h('i', {
+                class: 'hb-fill',
+                style: {
+                  width: s.focusScore + '%',
+                  background: s.focusScore >= 85 ? 'var(--ok)' : s.focusScore >= 70 ? 'var(--accent)' : 'var(--warn)'
+                }
+              })),
+            h('span', { class: 'small', style: { width: '30px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' } }, String(s.focusScore)))
+          : null,
         h('span', { class: 'mono', style: { fontWeight: '600', width: '58px', textAlign: 'right' } }, F.dur(s.minutes)),
         h('button', { class: 'btn ghost icon sm', html: SH.icon('edit', 14), title: '编辑', onClick: () => editSession(S, s) }),
         h('button', { class: 'btn ghost icon sm', html: SH.icon('trash', 14), title: '删除', onClick: async () => {

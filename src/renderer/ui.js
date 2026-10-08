@@ -408,11 +408,126 @@
       sub ? h('small', null, sub) : null);
   }
 
-  function statCard({ label, value, unit, desc, icon: ic, accent, onClick }) {
-    return h('div', { class: 'stat' + (accent ? ' accent' : ''), onClick, style: onClick ? { cursor: 'pointer' } : null },
+  /**
+   * 统计卡。
+   *
+   * `visual` 是一个关键的设计选择：**每个关键数字旁边都应该有个图形**。
+   * 纯数字读起来要「换算」（30 分钟离目标还差多少？连续 7 天算多还是少？），
+   * 而一个环、一段条、一串点阵能让人**不用换算就知道**。
+   *
+   * visual 支持三种形态：
+   *   · 字符串（SVG 源码）→ 直接放在右侧
+   *   · { node, side:'left'|'right' } → 指定摆哪边
+   *   · { kind:'ring'|'dots'|'spark'|..., ...opts } → 用内置工厂生成
+   */
+  function statCard({ label, value, unit, desc, icon: ic, accent, onClick, visual, tone }) {
+    const v = resolveVisual(visual);
+    const body = h('div', { class: 'sv-body' },
       h('div', { class: 'k' }, ic ? html(icon(ic, 14)) : null, label),
       h('div', { class: 'v' }, String(value), unit ? h('small', null, unit) : null),
       desc ? h('div', { class: 'd', html: desc }) : null);
+
+    if (!v.node) {
+      return h('div', {
+        class: 'stat' + (accent ? ' accent' : '') + (tone ? ' tone-' + tone : ''),
+        onClick, style: onClick ? { cursor: 'pointer' } : null
+      }, body);
+    }
+
+    const wrap = h('div', {
+      class: 'stat with-viz' + (accent ? ' accent' : '') + (tone ? ' tone-' + tone : ''),
+      onClick, style: onClick ? { cursor: 'pointer' } : null
+    });
+    if (v.side === 'left') { wrap.appendChild(v.node); wrap.appendChild(body); }
+    else { wrap.appendChild(body); wrap.appendChild(v.node); }
+    return wrap;
+  }
+
+  /** 把 visual 描述统一成 { node, side } */
+  function resolveVisual(visual) {
+    if (!visual) return { node: null, side: 'right' };
+    if (typeof visual === 'string') return { node: textToNode(visual), side: 'right' };
+    if (visual instanceof Node) return { node: visual, side: 'right' };
+    if (visual.node) {
+      return {
+        node: visual.node instanceof Node ? visual.node : textToNode(visual.node),
+        side: visual.side || 'right'
+      };
+    }
+    const V = SH.viz, C = SH.charts;
+    const o = visual;
+    switch (o.kind) {
+      case 'ring':
+        return { node: textToNode(C.ring({ ratio: o.ratio, size: o.size || 56, thickness: o.thickness || 6, color: o.color })), side: o.side || 'right' };
+      case 'progressRing':
+        return { node: textToNode(V.progressRing({ ratio: o.ratio, size: o.size || 64, thickness: o.thickness || 7, value: o.value, sub: o.sub, color: o.color })), side: o.side || 'right' };
+      case 'gauge':
+        return { node: textToNode(V.gauge({ value: o.value, max: o.max, size: o.size || 118, thickness: o.thickness || 11, label: o.label, sub: o.sub })), side: o.side || 'right' };
+      case 'dots': {
+        /* 🔴 点阵 SVG 内部是 width:100% 铺满设计。
+           直接塞进 flex 行里，它会按「尽可能宽」参与布局，把左边的文字挤成一列竖排单字
+           （实测「从未打开」被压成 4 行，每行一个字）。
+           所以这里按列数算出实际像素宽度，外面套一个定宽容器 —— flex 里必须给定宽，
+           否则百分比宽度会被当成「可以无限增长」。 */
+        const cols = o.cols || 6;
+        const size = o.size || 9;
+        const gap = o.gap || 4;
+        const w = cols * (size + gap) - gap + 2;
+        const svg = textToNode(V.dotMatrix({ total: o.total, done: o.done, cols, size, gap, color: o.color }));
+        return { node: h('div', { class: 'mini-viz', style: { width: w + 'px', flex: '0 0 ' + w + 'px' } }, svg), side: o.side || 'right' };
+      }
+      case 'spark':
+        return { node: textToNode(C.spark({ values: o.values || [], width: o.width || 84, height: o.height || 30, color: o.color || '#3b5bfd' })), side: o.side || 'right' };
+      case 'segbar':
+        return {
+          node: h('div', { style: { width: (o.width || 74) + 'px' } }, segmentedBar(o.segments || [], o.height || 8)),
+          side: o.side || 'right'
+        };
+      default:
+        return { node: null, side: 'right' };
+    }
+  }
+
+  function textToNode(s) {
+    if (!s) return null;
+    if (s instanceof Node) return s;
+    const t = String(s).trim();
+    if (/^</.test(t)) return html(t) || document.createTextNode(t);
+    return h('div', { class: 'mini-viz' }, t);
+  }
+
+  /** 多段进度条：把「已完成 / 进行中 / 未开始」画成一根条 */
+  function segmentedBar(segments, height) {
+    const bar = h('div', { class: 'segbar', style: height ? { height: height + 'px' } : null });
+    const total = segments.reduce((a, s) => a + (s.value || 0), 0) || 1;
+    segments.forEach((s) => {
+      if (!s.value) return;
+      bar.appendChild(h('i', {
+        style: { width: ((s.value / total) * 100).toFixed(1) + '%', background: s.color || '#3b5bfd' },
+        title: `${s.label || ''} ${s.value}`
+      }));
+    });
+    if (!bar.children.length) bar.appendChild(h('i', { style: { width: '0%' } }));
+    return bar;
+  }
+
+  /**
+   * 指标行：标签 + 图形条 + 数值。用于把一串「名称 数字」的列表换成图形。
+   * 与 viz.hbars 的区别是它返回 DOM（能挂事件），viz.hbars 返回 SVG 字符串。
+   */
+  function meterRow({ label, value, max, display, color, tone, onClick, sub }) {
+    const pct = Math.max(0, Math.min(1, max ? value / max : 0));
+    const col = color || (tone === 'ok' ? 'var(--ok)' : tone === 'warn' ? 'var(--warn)' : tone === 'danger' ? 'var(--danger)' : 'var(--accent)');
+    return h('div', { class: 'bullet-row', role: onClick ? 'button' : null, tabindex: onClick ? '0' : null, onClick },
+      h('span', { class: 'bl-label', title: label }, label),
+      h('span', { class: 'bl-track' }, h('i', { class: 'bl-fill', style: { width: (pct * 100).toFixed(1) + '%', background: col } })),
+      h('span', { class: 'bl-value' }, display != null ? display : String(value)),
+      sub ? h('span', { class: 'bl-sub' }, sub) : null);
+  }
+
+  /** 区块头：标题 + 右侧口径说明。图形区块都用它，保证「这个图在说什么」永远在场 */
+  function vizHead(title, note) {
+    return h('div', { class: 'viz-head' }, h('h4', null, title), note ? h('span', { class: 'vh-note' }, note) : null);
   }
 
   function progressBar(ratio, kind) {
@@ -446,5 +561,8 @@
   SH.statCard = statCard;
   SH.progressBar = progressBar;
   SH.switchRow = switchRow;
+  SH.meterRow = meterRow;
+  SH.segmentedBar = segmentedBar;
+  SH.vizHead = vizHead;
   SH.fmt = { dur, hm, clock, dayKey, parseKey, dayLabel, relTime, pct, pad2, WD };
 })();

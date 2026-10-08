@@ -519,21 +519,41 @@ async function run(ctx, outDir, deps) {
     } else {
       // 手动补录一次，把「记录 → 界面显示」这条链路也走通
       const r2 = await run(`
+        // 逐步记录「哪一步没成」—— 只报「今日记录数 0」的话，无法区分是按钮没找到、
+        // 表单没填进去、还是提交没生效，排查要从头猜一遍
+        const diag = {};
         const btn = window.__J.byText('#view button', '手动补录');
-        if (!btn) return { ok: false, error: '专注页找不到「手动补录」' };
+        diag.foundButton = !!btn;
+        if (!btn) return { ok: false, ...diag, error: '专注页找不到「手动补录」' };
         window.__J.click(btn);
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 500));
+        diag.dialogOpen = window.__J.dialogOpen();
+        diag.dialogTitle = window.__J.dialogTitle();
+        const minField = window.__J.field('时长');
+        diag.foundMinutes = !!minField;
+        diag.minutesType = minField ? minField.type : null;
         window.__J.fillField('时长', '35');
+        diag.minutesAfterFill = minField ? minField.value : null;
+        const timeField = window.__J.field('结束时间');
+        diag.foundTime = !!timeField;
+        diag.timeValue = timeField ? timeField.value : null;
         const okBtn = window.__J.dialogButton('记录');
+        diag.foundOk = !!okBtn;
         window.__J.click(okBtn);
-        await new Promise(r => setTimeout(r, 1200));
+        await new Promise(r => setTimeout(r, 1400));
+        diag.dialogClosed = !window.__J.dialogOpen();
         const list = await window.api.sessions.list({});
-        const today = new Date(); const k = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
-        const mine = list.filter(s => (s.note || '').length >= 0 && s.start.slice(0,10) === k);
-        return { ok: mine.length > 0, todayCount: mine.length, minutes: mine.map(s => s.minutes) };
+        /* 🔴 必须用应用自己的 dayKey（本地时区）来归日，不能对 ISO 串做 slice(0,10)。
+           start 字段是 toISOString() 的结果，永远是 **UTC**：
+           在 GMT+8 的 00:00–07:59 之间，UTC 还停在前一天 22:00–23:59，
+           于是「今天」的本地归日键是 10-09、而切片出来的是 10-08，一条都匹配不上。
+           这个 bug 只在清晨时段显形 —— 白天跑测试永远看不到，属于最阴的一类。
+           （应用本身是对的：util.js 里的 dayKey 一律按本地时区。） */
+        const k = window.SH.fmt.dayKey(new Date());
+        const mine = list.filter(s => window.SH.fmt.dayKey(new Date(s.start)) === k);
+        return { ok: mine.length > 0, ...diag, todayCount: mine.length, minutes: mine.map(s => s.minutes) };
       `, 'journey:manual');
-      record('专注：手动补录 → 今日记录出现', r2 && r2.ok,
-        { info: r2 && { 今日记录数: r2.todayCount, 时长: r2.minutes } });
+      record('专注：手动补录 → 今日记录出现', r2 && r2.ok, { info: r2 });
     }
   }
 

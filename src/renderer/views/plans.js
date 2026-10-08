@@ -33,7 +33,10 @@
       root.appendChild(h('h2', { class: 'section' }, '今天的任务'));
       root.appendChild(todayCard(S, x.today));
       root.appendChild(h('h2', { class: 'section' }, '接下来 7 天'));
-      root.appendChild(upcomingCard(S, x.upcoming));
+      // 左边看「哪天重、哪天轻」（柱形），右边看「具体是什么事」（清单）
+      root.appendChild(h('div', { class: 'grid g-2-1' }, loadCard(S, x.upcoming), upcomingCard(S, x.upcoming)));
+      root.appendChild(h('h2', { class: 'section' }, '计划时间线'));
+      root.appendChild(timelineCard(S, x.report));
       root.appendChild(h('div', { class: 'row', style: { margin: '22px 0 10px', gap: '10px' } },
         h('h2', { class: 'section', style: { margin: '0' } }, '进行中的计划'),
         h('div', { style: { flex: '1' } }),
@@ -46,6 +49,119 @@
       }
     }
   };
+
+  /* ------------------------------------------------------------------ *
+   * 计划时间线（甘特）
+   *
+   * 计划里最有价值的信息是「什么时候开始、什么时候结束、现在走到哪」。
+   * 这三件事原来分散在「2026-09-23 → 2026-10-13」和一条进度条上，
+   * 读者要自己在脑子里把日期换算成「还剩几天、走到几成了」。
+   * 甘特把三者放进同一条横条：位置=时间，填充=进度，菱形=阶段目标。
+   * ------------------------------------------------------------------ */
+  function timelineCard(S, report) {
+    const active = (S.db.plans || []).filter((p) => p.status === 'active');
+    const card = h('div', { class: 'card' },
+      h('div', { class: 'card-head' },
+        h('h3', null, '计划时间线'),
+        h('div', { class: 'grow', style: { flex: '1' } }),
+        h('span', { class: 'small muted' }, '横条长度＝计划周期 · 填充＝完成度 · 菱形＝阶段目标'),
+        h('button', { class: 'btn sm ghost', onClick: () => newPlan(S) }, '+ 新建')));
+
+    if (!active.length) {
+      card.appendChild(h('div', { class: 'card-body' }, SH.empty('还没有进行中的计划', '建一个计划并把大目标拆成阶段，这里就会显示时间线。', 'plan')));
+      return card;
+    }
+
+    const today = F.dayKey();
+    const rows = active.map((p, i) => {
+      const rep = report.find((r) => r.id === p.id);
+      const sub = (S.db.subjects || []).find((z) => z.id === p.subjectId);
+      const ms = (p.milestones || []).map((m) => ({ at: m.due || p.endDate, label: m.title, done: !!m.done }));
+      const rate = rep ? rep.rate / 100 : 0;
+      const daysLeft = rep ? rep.daysLeft : null;
+      return {
+        label: p.title,
+        start: p.startDate,
+        end: p.endDate,
+        progress: rate,
+        color: sub ? sub.color : undefined,
+        milestones: ms,
+        meta: `${p.title}\n${p.startDate} → ${p.endDate}\n完成 ${rate * 100 | 0}%${daysLeft != null ? ` · ${daysLeft < 0 ? '已超期 ' + (-daysLeft) + ' 天' : daysLeft === 0 ? '今天截止' : '剩 ' + daysLeft + ' 天'}` : ''}`
+      };
+    });
+
+    const body = h('div', { class: 'card-body' });
+    body.appendChild(SH.html(SH.viz.gantt({
+      rows, today,
+      rowHeight: 36,
+      from: active.reduce((m, p) => (p.startDate < m ? p.startDate : m), today),
+      to: active.reduce((m, p) => (p.endDate > m ? p.endDate : m), today)
+    })));
+    // 逾期项单独用一条横条列表点出来 —— 甘特图上看不出「哪些已经欠账」
+    const overdue = report.filter((r) => r.overdue > 0);
+    if (overdue.length) {
+      body.appendChild(h('div', { style: { marginTop: '14px' } },
+        SH.vizHead('逾期分布', `${overdue.reduce((a, b) => a + b.overdue, 0)} 项待补`),
+        SH.html(SH.viz.hbars({
+          items: overdue.map((r) => ({ label: r.title, value: r.overdue, color: r.risk === 'high' ? '#dc2626' : '#d97706' })),
+          unitLabel: (v) => `${v} 项`
+        }))));
+    }
+    card.appendChild(body);
+    return card;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 未来 7 天负载
+   * 「接下来哪天最重」是排计划时最该先看的一件事。一列柱形几秒就能扫完，
+   * 而按天分组的清单要逐行累加才看得出。
+   * ------------------------------------------------------------------ */
+  function loadCard(S, upcoming) {
+    const byDate = {};
+    for (let i = 1; i <= 6; i++) byDate[F.dayKey(new Date(Date.now() + i * 86400000))] = [];
+    upcoming.forEach((t) => { (byDate[t.date] = byDate[t.date] || []).push(t); });
+    const dates = Object.keys(byDate).sort();
+
+    const data = dates.map((d) => {
+      const rows = byDate[d] || [];
+      return {
+        label: F.dayLabel(d).replace('月', '/').replace('日', ''),
+        value: rows.reduce((a, b) => a + b.estMin, 0),
+        title: `${F.dayLabel(d, true)}：${rows.length} 项 · ${F.dur(rows.reduce((a, b) => a + b.estMin, 0))}`
+      };
+    });
+    const total = data.reduce((a, b) => a + b.value, 0);
+    const maxDay = data.slice().sort((a, b) => b.value - a.value)[0];
+    const avg = Math.round(total / Math.max(1, data.length));
+    const todayGoal = S.overview.dailyGoalMin || 120;
+
+    const heavy = data.filter((d) => d.value > todayGoal * 1.5);
+
+    return h('div', { class: 'card' },
+      h('div', { class: 'card-head' },
+        h('h3', null, '未来 7 天负载'),
+        h('div', { class: 'grow', style: { flex: '1' } }),
+        // 7 天负载的形状：柱形比折线更贴合「哪天重」，而且不会被误读成趋势
+        SH.html(SH.viz.miniBars({
+          values: data.map((d) => d.value),
+          labels: data.map((d) => d.label),
+          width: 92, height: 24
+        })),
+        h('span', { class: 'small muted' }, `日均 ${F.dur(avg)}`),
+        heavy.length ? h('span', { class: 'chip warn' }, `${heavy.length} 天偏重`) : null),
+      h('div', { class: 'card-body' },
+        SH.html(SH.charts.bars({
+          data, height: 168, labelEvery: 1,
+          goal: todayGoal,
+          unitLabel: (v) => F.dur(v),        // tooltip 用可读文案
+          axisLabel: (v) => F.hm(v),         // 轴刻度用紧凑格式，否则会被裁成「节 20 分」
+          goalLabel: '日目标'
+        })),
+        h('div', { class: 'viz-caption' },
+          maxDay && maxDay.value
+            ? `最重的是 ${maxDay.label}（${F.dur(maxDay.value)}）。把重的那天往后挪一点，比当天硬扛更可持续。`
+            : '接下来一周还是空的。可以把重复任务（比如每天背单词）加到计划里。')));
+  }
 
   function subjectFilter(S) {
     const sel = h('select', { class: 'select', style: { width: '170px' } },
@@ -76,6 +192,27 @@
       card.appendChild(SH.empty('今天没有任务', '把计划拆到今天，或者直接开一段专注。', 'plan'));
       return card;
     }
+    const doneN = tasks.filter((t) => t.done).length;
+    const leftMin = tasks.filter((t) => !t.done).reduce((a, b) => a + (b.estMin || 0), 0);
+    // 顶部一条点阵 + 一行关键值：几项、完了几项、还剩多少时间
+    card.appendChild(h('div', { class: 'card-body', style: { paddingBottom: '6px', borderBottom: '1px solid var(--border)' } },
+      h('div', { class: 'viz-split' },
+        h('div', { class: 'viz-main' }, SH.html(SH.viz.progressRing({
+          ratio: doneN / tasks.length,
+          size: 84, thickness: 9,
+          value: `${doneN}`,
+          unit: `/${tasks.length}`,
+          sub: '已完成',
+          color: doneN === tasks.length ? SH.viz.HUE.ok : SH.viz.HUE.accent
+        }))),
+        h('div', { class: 'viz-side' },
+          SH.html(SH.viz.dotMatrix({
+            dots: tasks.map((t) => ({ done: t.done, title: `${t.done ? '已完成' : '未完成'}：${t.title}（${F.dur(t.estMin)}）` })),
+            cols: 10, size: 11, gap: 5
+          })),
+          h('div', { class: 'row', style: { gap: '14px', marginTop: '10px', fontSize: '12px', color: 'var(--text-2)' } },
+            h('span', null, `还剩 ${tasks.length - doneN} 项`),
+            h('span', null, `约 ${F.dur(leftMin)}`))))));
     const list = h('div', { class: 'list' });
     tasks.forEach((t) => {
       const sub = (S.db.subjects || []).find((z) => z.id === t.subjectId);
@@ -146,20 +283,40 @@
       h('button', { class: 'btn ghost icon sm', html: SH.icon(isOpen ? 'up' : 'down', 14), title: isOpen ? '收起' : '展开',
         onClick: () => { expanded[plan.id] = !isOpen; SH.app.reload(); } }));
 
-    const metrics = h('div', { class: 'row', style: { gap: '10px', fontSize: '12px', color: 'var(--text-2)', flexWrap: 'wrap' } },
-      h('span', null, `${plan.startDate} → ${plan.endDate}`),
-      daysLeft != null ? h('span', {
-        class: 'chip ' + (daysLeft < 0 ? 'danger' : daysLeft <= 3 ? 'warn' : '')
-      }, daysLeft < 0 ? `已超期 ${-daysLeft} 天` : daysLeft === 0 ? '今天截止' : `剩 ${daysLeft} 天`) : null,
-      h('span', null, `应做 ${rep ? rep.due : 0} · 完成 ${rep ? rep.done : 0}`),
-      rep && rep.overdue ? h('span', { class: 'chip danger' }, `逾期 ${rep.overdue}`) : null);
-
     const body = h('div', { class: 'card-body' },
       plan.desc ? h('div', { class: 'small', style: { color: 'var(--text-2)', marginBottom: '10px' } }, plan.desc) : null,
-      h('div', { class: 'row', style: { gap: '10px', marginBottom: '8px' } },
-        h('div', { style: { flex: '1' } }, SH.progressBar(rate / 100, rate >= 80 ? 'ok' : rate >= 40 ? '' : 'warn')),
-        h('span', { class: 'mono small', style: { fontWeight: '650' } }, rate + '%')),
-      metrics,
+      /* 完成度不再只用一条进度条：
+         环给出「完成度」这个总量，点阵给出「一共几项、还剩几项」这个可数的事实。
+         计划类数据两种视角都需要 —— 只给百分比会看不到「任务总数」这个规模信息。 */
+      h('div', { class: 'viz-split', style: { gap: '16px', marginBottom: '12px' } },
+        h('div', { class: 'viz-main' }, SH.html(SH.viz.progressRing({
+          ratio: rate / 100,
+          size: 76, thickness: 8,
+          value: String(rate),
+          unit: '%',
+          sub: rep ? `${rep.done}/${rep.due}` : '',
+          color: rate >= 80 ? SH.viz.HUE.ok : rate >= 40 ? SH.viz.HUE.accent : SH.viz.HUE.warn
+        }))),
+        h('div', { class: 'viz-side viz-stack', style: { gap: '9px' } },
+          SH.meterRow({
+            label: '已打卡',
+            value: rep ? rep.done : 0,
+            max: Math.max(1, rep ? rep.due : 1),
+            display: `${rep ? rep.done : 0} 项`,
+            color: 'var(--ok)'
+          }),
+          SH.meterRow({
+            label: '逾期',
+            value: rep ? rep.overdue : 0,
+            max: Math.max(1, rep ? rep.due : 1),
+            display: `${rep ? rep.overdue : 0} 项`,
+            color: rep && rep.overdue ? 'var(--danger)' : 'var(--border-strong)'
+          }),
+          h('div', { class: 'row', style: { gap: '10px', fontSize: '12px', color: 'var(--text-2)', flexWrap: 'wrap' } },
+            h('span', null, `${plan.startDate} → ${plan.endDate}`),
+            daysLeft != null ? h('span', {
+              class: 'chip ' + (daysLeft < 0 ? 'danger' : daysLeft <= 3 ? 'warn' : '')
+            }, daysLeft < 0 ? `已超期 ${-daysLeft} 天` : daysLeft === 0 ? '今天截止' : `剩 ${daysLeft} 天`) : null))),
       (plan.milestones || []).length ? h('div', { style: { marginTop: '12px' } },
         h('div', { class: 'small muted', style: { marginBottom: '6px' } }, '阶段目标'),
         h('div', { class: 'seg' }, ...(plan.milestones || []).map((m) => h('span', {

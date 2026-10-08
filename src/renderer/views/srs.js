@@ -82,24 +82,42 @@
 
   /* ---------------- 统计 ---------------- */
   function statsRow(S, st) {
+    const HUE = SH.viz.HUE;
+    const due = st.dueToday + st.overdue;
+    const totalAll = Math.max(1, st.active + st.mastered);
+    // 保持率用环：百分比本身没有「离好还差多远」的位置感，环有
+    const retRatio = st.retention == null ? 0 : st.retention / 100;
     return h('div', { class: 'grid g4' },
       SH.statCard({
-        label: '今日待复习', value: st.dueToday + st.overdue, unit: '个', icon: 'review',
-        accent: (st.dueToday + st.overdue) > 0,
-        desc: st.overdue ? `其中 ${st.overdue} 个已逾期` : (st.dueToday ? '都在今天到期' : '今天没有到期的')
+        label: '今日待复习', value: due, unit: '个', icon: 'review',
+        accent: due > 0,
+        desc: st.overdue ? `其中 ${st.overdue} 个已逾期` : (st.dueToday ? '都在今天到期' : '今天没有到期的'),
+        visual: due > 0
+          ? {
+            kind: 'segbar', width: 54,
+            segments: [
+              { value: st.overdue, color: HUE.danger, label: '逾期' },
+              { value: st.dueToday, color: HUE.accent, label: '今天' }
+            ]
+          }
+          : null
       }),
       SH.statCard({
         label: '记忆保持率', value: st.retention == null ? '—' : st.retention, unit: st.retention == null ? '' : '%',
         icon: 'sparkle',
-        desc: st.attempts ? `${st.attempts} 次回忆中 ${st.good} 次一次想起` : '还没有复习记录'
+        desc: st.attempts ? `${st.attempts} 次中 ${st.good} 次一次想起` : '还没有复习记录',
+        visual: st.retention == null ? null : { kind: 'ring', ratio: retRatio, size: 44, thickness: 5.5, color: retRatio >= 0.85 ? HUE.ok : retRatio >= 0.7 ? HUE.accent : HUE.warn }
       }),
       SH.statCard({
         label: '在队列中', value: st.active, unit: '个', icon: 'list',
-        desc: `平均第 ${st.avgStage} 轮 · 已掌握 ${st.mastered} 个`
+        desc: `平均第 ${st.avgStage} 轮 · 已掌握 ${st.mastered}`,
+        // 掌握进度用环：分母是「全部知识点」，比只报「在队列中」更有全局感
+        visual: { kind: 'progressRing', ratio: st.mastered / totalAll, size: 46, thickness: 5, value: String(st.mastered) }
       }),
       SH.statCard({
         label: '近 7 天复习', value: st.reviewedLast7, unit: '次', icon: 'award',
-        desc: st.lapses ? `累计遗忘 ${st.lapses} 次` : '没有被遗忘打断过'
+        desc: st.lapses ? `累计遗忘 ${st.lapses} 次` : '没有被遗忘打断过',
+        tone: st.lapses > 0 ? 'warn' : undefined
       }));
   }
 
@@ -243,6 +261,7 @@
         SH.html(C.bars({
           data, height: 150, labelEvery: 1,
           unitLabel: (v) => `${v} 个`,
+          axisLabel: (v) => String(v),      // 轴上是「个数」，纯数字最清楚（加「个」太窄会换行）
           goalLabel: '峰值',
           integerAxis: true
         })),
@@ -381,24 +400,45 @@
     return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block">${parts.join('')}</svg>`;
   }
 
+  /**
+   * 阶段分布：列表 → **阶梯图**
+   *
+   * 间隔重复最该被看见的一件事是「卡片都堆在哪一轮」——
+   * 如果全堆在第 1 轮，说明复习只是走了一遍流程、还没真正进入长期记忆。
+   * 一列「第 1 轮 12 / 第 2 轮 5 / …」的文字要逐行读才拼出形状，
+   * 而阶梯图的坡本身就在表达这件事。
+   */
   function stageBars(st) {
-    const total = Math.max(1, st.active + st.mastered);
-    const box = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '9px' } });
-    st.intervals.forEach((iv, i) => {
-      const n = st.byStage[i] || 0;
-      box.appendChild(h('div', null,
-        h('div', { class: 'row', style: { gap: '8px', marginBottom: '4px', fontSize: '12.5px' } },
-          h('span', { style: { flex: '1' } }, `第 ${i + 1} 轮 · 间隔 ${iv} 天`),
-          h('span', { class: 'mono', style: { fontWeight: '600' } }, String(n))),
-        SH.progressBar(n / total)));
-    });
+    const stages = st.intervals.map((iv, i) => ({
+      label: `${i + 1}轮`,
+      count: st.byStage[i] || 0,
+      hint: `第 ${i + 1} 轮 · 间隔 ${iv} 天`
+    }));
     const mastered = st.byStage[st.intervals.length] || 0;
-    box.appendChild(h('div', null,
-      h('div', { class: 'row', style: { gap: '8px', marginBottom: '4px', fontSize: '12.5px' } },
-        h('span', { style: { flex: '1' } }, '已掌握'),
-        h('span', { class: 'mono', style: { fontWeight: '600', color: 'var(--ok)' } }, String(mastered))),
-      SH.progressBar(mastered / total, 'ok')));
-    return box;
+    if (mastered) stages.push({ label: '已掌握', count: mastered, hint: '已走完所有间隔' });
+
+    const total = Math.max(1, st.active + st.mastered);
+    const rows = st.intervals.map((iv, i) => ({
+      label: `第 ${i + 1} 轮`,
+      value: st.byStage[i] || 0,
+      color: SH.viz.seriesColor(i),
+      sub: `间隔 ${iv} 天`
+    }));
+    if (mastered) rows.push({ label: '已掌握', value: mastered, color: SH.viz.HUE.ok, sub: '走完所有间隔' });
+
+    return h('div', { class: 'viz-stack' },
+      SH.html(SH.viz.stages({
+        stages,
+        masteredFrom: st.intervals.length,
+        color: SH.viz.HUE.accent
+      })),
+      h('div', { style: { marginTop: '4px' } },
+        SH.vizHead('各轮次人数', `共 ${total} 个知识点`),
+        SH.html(SH.viz.hbars({
+          items: rows,
+          max: Math.max(...rows.map((r) => r.value), 1),
+          unitLabel: (v) => `${v} 个`
+        }))));
   }
 
   function metricCard(k, v, d) {

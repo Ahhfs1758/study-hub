@@ -52,10 +52,20 @@
     return bar;
   }
 
-  /* ---------------- 评分 ---------------- */
+  /* ------------------------------------------------------------------ *
+   * 评分：仪表 + 雷达
+   *
+   * 原来是一个圆环 + 四行「标签 权重 进度条」。问题是：
+   *   · 圆环看不出「满分是多少、我离满分多远」——仪表有刻度，一眼就有位置感
+   *   · 四个维度各自一条平行条，看不出「形状」——而形状恰恰是最有用的信息：
+   *     雷达图上凹进去的那个角，就是下一步该补的地方
+   * 所以改成「左仪表（总分）+ 右雷达（结构）」，两条互补的图形。
+   * 文字说明保留在雷达下方，因为雷达不能代替「这项怎么算的」。
+   * ------------------------------------------------------------------ */
   function scoreCard(S, x) {
     const sc = x.report.score;
     const color = sc.score >= 80 ? 'var(--ok)' : sc.score >= 60 ? 'var(--accent)' : 'var(--warn)';
+    const HUE = SH.viz.HUE;
     const dims = [
       ['目标达成', sc.parts.goalRate, '每个已过完的日子，当日时长 / 日目标，再取平均', 45],
       ['计划执行', sc.parts.planRate, `本周应做 ${sc.dueTotal} 项，完成 ${sc.dueDone} 项`, 30],
@@ -63,10 +73,45 @@
       ['无欠账', sc.parts.noDebt, `逾期未完成 ${sc.overdue} 项`, 10]
     ];
 
-    const dial = SH.html(C.ring({ ratio: sc.score / 100, size: 132, thickness: 11, color }));
-    const center = h('div', { style: { position: 'absolute', inset: '0', display: 'grid', placeContent: 'center' } },
-      h('div', { style: { fontSize: '32px', fontWeight: '700', letterSpacing: '-1.5px', color } }, String(sc.score)),
-      h('div', { class: 'small muted' }, '分'));
+    const gauge = SH.html(SH.viz.gauge({
+      value: sc.score, max: 100, size: 228, thickness: 15,
+      label: '专注力评分', sub: '满分 100'
+    }));
+
+    // 雷达：把四个维度画成形状。同时叠一条「上周」用于对比，
+    // 这样「哪一项在退步」不需要看表格就能看出来
+    const prevSc = x.prev && x.prev.score ? x.prev.score.parts : null;
+    const radarAxes = dims.map(([label, v, hint]) => ({ label, value: v / 100, hint }));
+    const radarSeries = prevSc
+      ? [
+        { name: '本周', values: dims.map(([, v]) => v / 100), color: HUE.accent },
+        { name: '上周', values: [
+          prevSc.goalRate / 100, prevSc.planRate / 100, prevSc.continuity / 100, prevSc.noDebt / 100
+        ], color: HUE.muted }
+      ]
+      : null;
+
+    const right = h('div', { style: { flex: '1', minWidth: 0 } });
+    right.appendChild(h('div', { class: 'row', style: { alignItems: 'center', gap: '18px' } },
+      h('div', { style: { flex: '0 0 auto' } }, SH.html(SH.viz.radar({
+        axes: radarAxes, series: radarSeries, size: 196, levels: 4
+      }))),
+      h('div', { class: 'viz-stack', style: { flex: '1', minWidth: 0, gap: '10px' } },
+        h('div', { class: 'row', style: { gap: '14px', fontSize: '11.5px', color: 'var(--muted)' } },
+          legendSwatch(HUE.accent, '本周'),
+          prevSc ? legendSwatch(HUE.muted, '上周') : null),
+        /* 口径说明放在 title 里而不是正文：
+           四个维度的算法（「按已过完的日子取平均」这类）是解释性的，
+           第一次看需要，之后每次复盘都会被跳过 —— 常驻会挤占可视化空间。 */
+        ...dims.map(([label, v, hint, weight]) => h('div', { title: hint },
+          h('div', { class: 'row', style: { gap: '6px', marginBottom: '3px' } },
+            h('span', { style: { fontSize: '12px', fontWeight: '550' } }, label),
+            h('span', { class: 'chip', style: { height: '15px', fontSize: '9.5px', padding: '0 5px' } }, `${weight}%`),
+            h('div', { style: { flex: '1' } }),
+            h('span', { class: 'mono small', style: { fontWeight: '650' } }, v + '%')),
+          SH.progressBar(v / 100, v >= 80 ? 'ok' : v >= 50 ? '' : 'warn'))),
+        h('div', { class: 'small muted', style: { marginTop: '2px' } },
+          `${dims.reduce((worst, d) => (d[1] < worst[1] ? d : worst), dims[0])[0]} 是最弱的一环 —— 优先补它，总分提升最快。`))));
 
     return h('div', { class: 'card' },
       h('div', { class: 'card-head' },
@@ -74,17 +119,30 @@
         h('div', { class: 'grow', style: { flex: '1' } }),
         h('span', { class: 'chip ' + (sc.score >= 80 ? 'ok' : sc.score >= 60 ? '' : 'warn') },
           sc.score >= 85 ? '状态很好' : sc.score >= 70 ? '基本达标' : sc.score >= 55 ? '需要加压' : '明显掉队')),
-      h('div', { class: 'card-body row', style: { gap: '28px', alignItems: 'center' } },
-        h('div', { style: { position: 'relative', flex: '0 0 132px' } }, dial, center),
-        h('div', { style: { flex: '1', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '12px' } },
-          ...dims.map(([label, v, hint, weight]) => h('div', null,
-            h('div', { class: 'row', style: { gap: '8px', marginBottom: '4px' } },
-              h('span', { style: { fontSize: '12.5px', fontWeight: '550' } }, label),
-              h('span', { class: 'chip', style: { height: '17px', fontSize: '10px', padding: '0 6px' } }, `权重 ${weight}%`),
-              h('div', { style: { flex: '1' } }),
-              h('span', { class: 'mono small', style: { fontWeight: '650' } }, v + '%')),
-            SH.progressBar(v / 100, v >= 80 ? 'ok' : v >= 50 ? '' : 'warn'),
-            h('div', { class: 'small muted', style: { marginTop: '3px' } }, hint))))));
+      h('div', { class: 'card-body row', style: { gap: '26px', alignItems: 'center' } },
+        h('div', { style: { flex: '0 0 auto' } }, gauge),
+        right));
+  }
+
+  /** 把表格里的展示文案解析回数字：
+      时长是「1 小时 20 分」、比例是「57%」、计数是「19」——
+      要算百分比变化就必须先把文案解回数值。 */
+  function num(v) {
+    const m = String(v).match(/-?\d+(?:\.\d+)?/g);
+    if (!m) return 0;
+    if (String(v).includes('小时')) {
+      const h = Number(m[0]) || 0;
+      const mm = Number(m[1]) || 0;
+      return h * 60 + mm;
+    }
+    return Number(m[0]) || 0;
+  }
+
+  function legendSwatch(color, text) {
+    return h('span', { class: 'row nowrap', style: { gap: '5px', alignItems: 'center' } },
+      h('span', {
+        style: { width: '16px', height: '3px', borderRadius: '2px', background: color, display: 'inline-block' }
+      }), text);
   }
 
   /* ---------------- 每日 ---------------- */
@@ -141,11 +199,49 @@
           : h('span', { class: 'chip ' + (good ? 'ok' : 'warn') }, (d > 0 ? '↑ ' : '↓ ') + (typeof d === 'number' && !Number.isInteger(d) ? d : Math.abs(d))))));
     });
     tb.appendChild(body);
+
+    /* 表格之上加一段双向条形。
+       表格负责「精确到每个指标」，条形负责「哪几项真的变了」——
+       七行表格里找变化要逐行读，条形扫一眼就知道进步集中在哪里。
+       「中断次数」越多越差，所以正负方向要反过来，否则会把退步画成绿色。 */
+    const INVERSE = new Set(['中断次数']);
+    const vis = rows
+      .filter(([k, pv, cv, d]) => Math.abs(d) > 0 && num(pv) > 0)
+      .map(([k, pv, cv, d]) => {
+        const before = num(pv), after = num(cv);
+        const pct = before ? Math.round(((after - before) / before) * 100) : 0;
+        const better = INVERSE.has(k) ? pct < 0 : pct > 0;
+        return { label: k, value: Math.abs(pct), raw: pct, better };
+      })
+      .filter((v) => v.value > 0);
+    let visBlock = null;
+    if (vis.length) {
+      const maxMag = Math.max(...vis.map((v) => v.value));
+      visBlock = h('div', { style: { padding: '0 16px 14px' } },
+        /* 用**百分比**而不是绝对值：这一组指标的单位各不相同（分钟 / 次 / 天 / 分），
+           拿绝对值画同一根轴等于把「+329 分钟」和「+1 场次」当成可比 ——
+           读者会觉得时长进步巨大、场次没变，而事实是这两个数根本不能相减。 */
+        SH.vizHead('变化幅度', '按百分比比较 · 绿＝变好 · 橙＝变差'),
+        SH.html(SH.viz.hbars({
+          items: vis.map((v) => ({
+            label: v.label,
+            value: v.value,
+            color: v.better ? '#0f9d6e' : '#d97706',
+            title: `${v.label}：${v.better ? '改善' : '退步'} ${Math.abs(v.raw)}%`
+          })),
+          max: maxMag,
+          mode: 'pct',
+          unitLabel: (v) => String(Math.round(v)),
+          showRank: false
+        })));
+    }
+
     return h('div', { class: 'card' },
       h('div', { class: 'card-head' },
         h('h3', null, '与上周对比'),
         h('div', { class: 'grow', style: { flex: '1' } }),
         pctv != null ? h('span', { class: 'chip ' + (delta >= 0 ? 'ok' : 'warn') }, `${delta >= 0 ? '增加' : '减少'} ${Math.abs(pctv)}%`) : null),
+      visBlock,
       h('div', { style: { overflow: 'hidden' } }, tb));
   }
 
@@ -153,14 +249,23 @@
   function taskCard(S, x) {
     const t = x.report.tasks;
     const body = h('div', { class: 'card-body' });
-    body.appendChild(h('div', { class: 'row', style: { gap: '16px', alignItems: 'flex-end', marginBottom: '12px' } },
-      h('div', null,
-        h('div', { class: 'small muted' }, '任务完成率'),
-        h('div', { style: { fontSize: '32px', fontWeight: '700', letterSpacing: '-1.5px' } },
-          `${t.rate}`, h('small', { style: { fontSize: '15px', color: 'var(--muted)' } }, '%'))),
-      h('div', { style: { flex: '1' } },
-        h('div', { class: 'small muted', style: { marginBottom: '5px' } }, `完成 ${t.done} / 应做 ${t.total}`),
-        SH.progressBar(t.total ? t.done / t.total : 0, t.rate >= 80 ? 'ok' : t.rate >= 50 ? '' : 'warn'))));
+    // 完成率用半圆仪表：左侧刻度直接表达「离满还有多远」，
+    // 而 32px 的数字只能告诉你「是多少」
+    body.appendChild(h('div', { class: 'viz-split', style: { alignItems: 'center', marginBottom: '10px' } },
+      h('div', { class: 'viz-main' }, SH.html(SH.viz.gauge({
+        value: t.rate, max: 100, size: 178, thickness: 13,
+        label: '任务完成率'
+      }))),
+      h('div', { class: 'viz-side viz-stack', style: { gap: '10px' } },
+        SH.meterRow({ label: '已完成', value: t.done, max: Math.max(1, t.total), display: `${t.done} 项`, color: 'var(--ok)' }),
+        SH.meterRow({
+          label: '未完成', value: Math.max(0, t.total - t.done), max: Math.max(1, t.total),
+          display: `${Math.max(0, t.total - t.done)} 项`,
+          color: t.rate >= 80 ? 'var(--border-strong)' : 'var(--warn)'
+        }),
+        h('div', { class: 'row', style: { gap: '12px', fontSize: '12px', color: 'var(--text-2)' } },
+          h('span', null, `应做 ${t.total} 项`),
+          h('span', null, x.report.countTo !== x.report.to ? `（统计到 ${x.report.countTo}）` : null)))));
     body.appendChild(h('div', { class: 'small muted' },
       t.rate >= 90 ? '执行力很强。目标可以定得更大一点了。'
         : t.rate >= 70 ? '基本跟得上计划。把剩下的补齐就好。'

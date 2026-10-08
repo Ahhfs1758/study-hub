@@ -132,6 +132,15 @@
       const extra = view.load ? await view.load(SH.state) : null;
       SH.clear(host);
       view.render(host, SH.state, extra);
+      /* 入场动画只在「切换到另一个页面」时播一次。
+         reload（同一个页面重渲染，比如勾完任务后刷新）不播 —— 否则每勾一下
+         整个页面就重新浮上来一次，高频操作时会变得很吵。 */
+      if (app._lastRendered !== app.current) {
+        host.classList.add('view-enter');
+        // 动画结束后摘掉，避免它一直挂在 DOM 上影响后续 reload 的重绘判断
+        setTimeout(() => host.classList.remove('view-enter'), 500);
+      }
+      app._lastRendered = app.current;
       if (app.current === 'focus') view.onTick && view.onTick(SH.state.timer);
     } catch (err) {
       SH.clear(host);

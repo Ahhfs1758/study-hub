@@ -13,6 +13,7 @@
   const STATUS = { todo: '未开始', doing: '进行中', done: '已完成' };
   const STATUS_COLOR = { todo: '', doing: 'accent', done: 'ok' };
 
+  const HUE = SH.viz.HUE;
   const q = { text: '', subject: '', type: '', status: '', view: 'grid' };
 
   SH.views.materials = {
@@ -59,16 +60,99 @@
     });
   }
 
-  /* ---------------- 概览 ---------------- */
+  /* ------------------------------------------------------------------ *
+   * 概览：先用图形说清「资料库的结构」，再给四个关键数字
+   *
+   * 原来只有四个数字（总数/投入/从未打开/闲置），回答不了「我这库偏科吗」。
+   * 类型环形图 + 状态分段条把「有几类、各占多少、处于什么状态」
+   * 变成两张一眼能读完的图，然后数字负责给精确值。
+   * ------------------------------------------------------------------ */
   function summary(S, rep) {
     const ms = S.db.materials || [];
-    const doing = ms.filter((m) => m.status === 'doing').length;
-    const done = ms.filter((m) => m.status === 'done').length;
-    return h('div', { class: 'grid g4' },
-      SH.statCard({ label: '资料总数', value: ms.length, unit: '份', icon: 'material', desc: `进行中 ${doing} · 已完成 ${done}` }),
-      SH.statCard({ label: '累计投入', value: F.dur(rep.totalMin), icon: 'clock', desc: '关联资料后自动累计' }),
-      SH.statCard({ label: '从未打开', value: rep.neverOpened.length, unit: '份', icon: 'alert', desc: rep.neverOpened.length ? '收藏 ≠ 学会' : '都翻过了' }),
-      SH.statCard({ label: `闲置 ${rep.idleDays} 天以上`, value: rep.idle.length, unit: '份', icon: 'moon', desc: rep.idle.length ? '考虑排进计划或清理' : '没有闲置资料' }));
+    const doing = ms.filter((m) => m.status === 'doing');
+    const done = ms.filter((m) => m.status === 'done');
+    const todo = ms.filter((m) => m.status === 'todo' || !m.status);
+    const HUE = SH.viz.HUE;
+
+    // 按类型计数：资料库的「偏科」一眼可见
+    const byType = {};
+    ms.forEach((m) => { byType[m.type] = (byType[m.type] || 0) + 1; });
+    const typeItems = Object.entries(byType)
+      .map(([t, n]) => ({ label: TYPE_LABEL[t] || '其他', value: n }))
+      .sort((a, b) => b.value - a.value);
+
+    const totalMin = ms.reduce((a, b) => a + (b.timeSpentMin || 0), 0);
+
+    const overview = h('div', { class: 'card' },
+      h('div', { class: 'card-head' },
+        h('h3', null, '资料库全景'),
+        h('div', { class: 'grow', style: { flex: '1' } }),
+        h('span', { class: 'small muted' }, '环形＝类型分布 · 条＝学习状态')),
+      h('div', { class: 'card-body' },
+        h('div', { class: 'viz-split', style: { alignItems: 'flex-start', gap: '24px' } },
+          h('div', { class: 'viz-main' }, SH.html(SH.charts.donut({
+            items: typeItems.map((it, i) => ({ ...it, color: SH.viz.seriesColor(i) })),
+            size: 148, thickness: 17,
+            centerTop: String(ms.length),
+            centerSub: '份资料'
+          }))),
+          h('div', { class: 'viz-side viz-stack', style: { gap: '14px' } },
+            // 类型图例（带占比条）
+            SH.html(SH.viz.hbars({
+              items: typeItems.slice(0, 6).map((it, i) => ({
+                label: it.label, value: it.value,
+                color: SH.viz.seriesColor(i),
+                title: `${it.label}：${it.value} 份（占 ${Math.round((it.value / (ms.length || 1)) * 100)}%）`
+              })),
+              unitLabel: (v) => `${v} 份`
+            })),
+            ms.length ? h('div', null,
+              SH.vizHead('学习状态'),
+              SH.segmentedBar([
+                { value: done.length, color: 'var(--ok)', label: '已完成' },
+                { value: doing.length, color: 'var(--accent)', label: '进行中' },
+                { value: todo.length, color: 'var(--border-strong)', label: '未开始' }
+              ], 9),
+              h('div', { class: 'row', style: { gap: '14px', marginTop: '8px', fontSize: '11.5px', color: 'var(--muted)', flexWrap: 'wrap' } },
+                legendDot('var(--ok)', `已完成 ${done.length}`),
+                legendDot('var(--accent)', `进行中 ${doing.length}`),
+                legendDot('var(--border-strong)', `未开始 ${todo.length}`))) : null))));
+
+    return h('div', null,
+      overview,
+      h('div', { class: 'grid g4', style: { marginTop: '14px' } },
+        SH.statCard({
+          label: '累计投入', value: F.dur(totalMin), icon: 'clock',
+          desc: '关联资料后自动累计',
+          visual: { kind: 'ring', ratio: Math.min(1, totalMin / (60 * 20)), size: 44, thickness: 5 }
+        }),
+        SH.statCard({
+          label: '进行中', value: doing.length, unit: '份', icon: 'playCircle',
+          desc: `共 ${ms.length} 份`,
+          visual: { kind: 'progressRing', ratio: ms.length ? doing.length / ms.length : 0, size: 46, thickness: 5, value: String(doing.length) }
+        }),
+        SH.statCard({
+          label: '从未打开', value: rep.neverOpened.length, unit: '份', icon: 'alert',
+          desc: rep.neverOpened.length ? '收藏 ≠ 学会' : '都翻过了',
+          tone: rep.neverOpened.length ? 'warn' : undefined,
+          visual: rep.neverOpened.length
+            ? { kind: 'dots', total: ms.length, done: ms.length - rep.neverOpened.length, cols: 8, size: 5.5, gap: 3, color: '#0f9d6e' }
+            : null
+        }),
+        SH.statCard({
+          label: `闲置 ${rep.idleDays} 天以上`, value: rep.idle.length, unit: '份', icon: 'moon',
+          desc: rep.idle.length ? '考虑排进计划或清理' : '没有闲置资料',
+          tone: rep.idle.length ? 'warn' : undefined,
+          visual: rep.idle.length
+            ? { kind: 'dots', total: ms.length, done: ms.length - rep.idle.length, cols: 8, size: 5.5, gap: 3, color: '#d97706' }
+            : null
+        })));
+  }
+
+  function legendDot(color, text) {
+    return h('span', { class: 'row nowrap', style: { gap: '5px', alignItems: 'center' } },
+      h('span', { style: { width: '8px', height: '8px', borderRadius: '3px', background: color, display: 'inline-block' } }),
+      text);
   }
 
   /* ---------------- 工具条 ---------------- */
@@ -122,15 +206,28 @@
           h('div', { class: 'm-sub row', style: { gap: '7px', marginTop: '3px', flexWrap: 'wrap' } },
             sub ? h('span', { class: 'row', style: { gap: '4px' } }, h('span', { class: 'subj-dot', style: { background: sub.color, width: '7px', height: '7px', flex: '0 0 7px' } }), sub.name) : null,
             h('span', null, TYPE_LABEL[m.type] || '其他'),
-            (m.tags || []).slice(0, 2).map((t) => h('span', { class: 'chip', style: { height: '18px', padding: '0 6px', fontSize: '10.5px' } }, t))))
+            (m.tags || []).slice(0, 2).map((t) => h('span', { class: 'chip', style: { height: '18px', padding: '0 6px', fontSize: '10.5px' } }, t)))),
+        // 进度环替掉原来那条细进度条：环在卡片右上角更醒目，
+        // 而且和下面「投入时长」形成「进度 vs 成本」的对照
+        SH.html(SH.viz.progressRing({
+          ratio: progress / 100,
+          size: 42, thickness: 5,
+          value: String(progress),
+          unit: '%',
+          color: m.status === 'done' ? HUE.ok : (progress > 0 ? color : 'var(--border-strong)')
+        }))
       ),
       m.note ? h('div', { class: 'small muted', style: { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, m.note) : null,
-      h('div', null,
-        h('div', { class: 'row', style: { gap: '8px', marginBottom: '5px' } },
-          h('span', { class: 'chip ' + (STATUS_COLOR[m.status] || '') }, STATUS[m.status] || '未开始'),
-          h('span', { style: { flex: '1' } }),
-          h('span', { class: 'mono small', style: { fontWeight: '600' } }, progress + '%')),
-        h('div', { class: 'bar-mini' }, h('i', { style: { width: progress + '%', background: color } }))),
+      // 「一共几个单元、完成几个」用点阵表达，比百分比更能看出剩余工作量
+      m.totalUnits > 0 ? h('div', { style: { marginTop: '2px' } },
+        SH.html(SH.viz.dotMatrix({
+          total: Math.min(m.totalUnits, 60),
+          done: Math.min(m.doneUnits || 0, 60),
+          cols: Math.min(12, Math.max(1, m.totalUnits)),
+          size: 8, gap: 4,
+          color,
+          dots: null
+        }))) : null,
       h('div', { class: 'm-foot' },
         h('span', { html: SH.icon('clock', 12) }), F.dur(m.timeSpentMin || 0),
         h('span', { style: { flex: '1' } }),
@@ -188,6 +285,14 @@
       h('div', { class: 'card-head' },
         h('h3', null, '在吃灰的资料'),
         h('div', { class: 'grow', style: { flex: '1' } }),
+        // 「吃灰」的比例用一根条说清：有多少份是真正动过的
+        h('span', { style: { width: '78px', flex: '0 0 78px' } },
+          SH.segmentedBar([
+            { value: (S.db.materials || []).length - rows.length, color: 'var(--ok)', label: '动过' },
+            { value: rep.neverOpened.length, color: 'var(--warn)', label: '从未打开' },
+            { value: rep.idle.length, color: 'var(--danger)', label: '闲置' }
+          ], 8)),
+        h('span', { class: 'chip warn' }, `${rows.length} 份待处理`),
         h('span', { class: 'small muted' }, '收藏了没看，等于没收藏')),
       list);
   }

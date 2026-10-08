@@ -246,11 +246,22 @@
       const weekMin = (S.db.sessions || [])
         .filter((x) => x.subjectId === s.id && Date.now() - new Date(x.start).getTime() < 7 * 86400000)
         .reduce((a, b) => a + b.minutes, 0);
+      const goalW = s.goalMinPerWeek || 0;
+      const ratio = goalW ? Math.min(1, weekMin / goalW) : 0;
       list.appendChild(h('div', { class: 'list-item' },
         h('span', { class: 'subj-dot', style: { background: s.color, width: '12px', height: '12px', flex: '0 0 12px' } }),
         h('div', { style: { flex: '1', minWidth: 0 } },
           h('div', { class: 'li-title' }, s.name),
-          h('div', { class: 'li-sub' }, s.goalMinPerWeek ? `周目标 ${F.dur(s.goalMinPerWeek)} · 近 7 天 ${F.dur(weekMin)}` : `未设周目标 · 近 7 天 ${F.dur(weekMin)}`)),
+          h('div', { class: 'li-sub' }, `近 7 天 ${F.dur(weekMin)}`)),
+        /* 周目标达成用一小段条：这个页面的用途是「调目标」，
+           而调目标最需要看见的就是「现在离目标多远」，
+           原来把它写成一行「周目标 4 小时 · 近 7 天 1 小时 20 分」要心算才知道差距。 */
+        goalW
+          ? h('span', { class: 'row', style: { gap: '7px', flex: '0 0 auto' }, title: `周目标 ${F.dur(goalW)}，已完成 ${Math.round(ratio * 100)}%` },
+            h('span', { class: 'hb-track', style: { display: 'block', width: '62px' } },
+              h('i', { class: 'hb-fill', style: { width: (ratio * 100).toFixed(1) + '%', background: s.color } })),
+            h('span', { class: 'small muted', style: { width: '30px', textAlign: 'right' } }, Math.round(ratio * 100) + '%'))
+          : h('span', { class: 'chip', style: { flex: '0 0 auto' } }, '未设目标'),
         h('button', { class: 'btn sm ghost', html: SH.icon('edit', 13), onClick: () => editSubject(S, s) }),
         h('button', { class: 'btn sm ghost', html: SH.icon('trash', 13), onClick: async () => {
           const ok = await SH.confirm({ title: `删除科目「${s.name}」？`, message: '历史学习记录会保留，只是不再归到该科目下。', okText: '删除', danger: true });
@@ -379,6 +390,36 @@
         } }, '恢复')));
     });
 
+    /* 存储占用：在「数据与备份」这一块给一个可视化的用量条。
+       网页版有 5MB 硬上限、桌面版则关心备份占用 —— 两种环境下
+       「还剩多少可用」都是必须能一眼看到的信息，而不是等写失败了才知道。 */
+    const usage = (() => {
+      const bytes = new Blob([JSON.stringify(S.db)]).size;
+      const backupBytes = x.backups.reduce((a, b) => a + (b.size || 0), 0);
+      const limit = 5 * 1024 * 1024;
+      const isBrowser = (S.snapshot && S.snapshot.platform) === 'web';
+      return { bytes, backupBytes, limit, isBrowser };
+    })();
+    const usageCard = card('存储占用', usage.isBrowser ? '浏览器为本站分配的配额约 5 MB' : '数据存在本机，没有硬性上限',
+      h('div', { class: 'viz-stack' },
+        SH.meterRow({
+          label: '当前数据',
+          value: usage.bytes, max: usage.limit,
+          display: (usage.bytes / 1024).toFixed(1) + ' KB',
+          color: 'var(--accent)',
+          sub: usage.isBrowser ? Math.round((usage.bytes / usage.limit) * 100) + '% 配额' : ''
+        }),
+        SH.meterRow({
+          label: `备份 ${x.backups.length} 份`,
+          value: usage.backupBytes, max: Math.max(usage.limit, usage.backupBytes * 2),
+          display: (usage.backupBytes / 1024).toFixed(1) + ' KB',
+          color: 'var(--info)'
+        })),
+      h('div', { class: 'viz-caption', style: { marginTop: '10px' } },
+        usage.isBrowser
+          ? '网页版数据在浏览器里。清浏览器数据会丢 —— 重要的话用下面的「导出」存一份。'
+          : '备份每天滚动一份，保留最近 14 份。'));
+
     return h('div', { class: 'grid g2' },
       card('应用行为', null,
         SH.switchRow('开机自动启动', '需要应用本体已经放在固定位置', p.launchAtLogin, async (v) => { await set({ launchAtLogin: v }); }),
@@ -413,6 +454,7 @@
           } }, '一键清空')),
         h('div', { style: { marginTop: '10px' } },
           h('div', { class: 'small muted', style: { marginBottom: '6px' } }, `自动备份（最近 ${x.backups.length} 份）`),
-          backupList)));
+          backupList),
+      usageCard));
   }
 })();

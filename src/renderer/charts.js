@@ -64,6 +64,15 @@
     unitLabel = (v) => SH.fmt.hm(v),
     /** 目标线前缀文字。复习数这类「个数」的图不该写「目标」 */
     goalLabel = '目标',
+    /**
+     * y 轴刻度的显示方式。
+     *
+     * 🔴 必须与 unitLabel 分开：unitLabel 的文案是给 tooltip 读的（「1 小时 40 分」），
+     * 而轴刻度空间很窄（左边距 52px），同样长度的文案会被裁成「节 20 分」——
+     * 既看不懂又显得产品很糙。轴上一律用紧凑格式（1:40）。
+     * 这与之前那个「单位只作用在 tooltip 上」的坑是同一类问题的另一面。
+     */
+    axisLabel = (v) => SH.fmt.hm(v),
     /** 纵轴是否必须是整数（「个数」类图表要开；「时长」类不能开） */
     integerAxis = false,
     highlightLast = true,
@@ -72,7 +81,7 @@
     labelEvery = 1
   } = {}) {
     const W = 720, H = height;
-    const pl = 46, pr = 14, pt = 16, pb = 28;
+    const pl = 52, pr = 14, pt = 16, pb = 28;
     const iw = W - pl - pr, ih = H - pt - pb;
     const values = data.map((d) => d.value || 0);
     const TICK_COUNT = 3;
@@ -90,13 +99,13 @@
     for (const t of ticks(max, TICK_COUNT)) {
       const y = pt + ih - (t / max) * ih;
       parts.push(`<line x1="${pl}" y1="${y.toFixed(1)}" x2="${W - pr}" y2="${y.toFixed(1)}" stroke="#eef1f6" stroke-width="1"/>`);
-      parts.push(`<text x="${pl - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10.5" fill="#8b96ab" font-family="inherit">${esc(String(unitLabel(t)))}</text>`);
+      parts.push(`<text x="${pl - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10.5" fill="#8b96ab" font-family="inherit">${esc(String(axisLabel(t)))}</text>`);
     }
     // 目标线
     if (goal > 0 && goal <= max) {
       const y = pt + ih - (goal / max) * ih;
       parts.push(`<line x1="${pl}" y1="${y.toFixed(1)}" x2="${W - pr}" y2="${y.toFixed(1)}" stroke="#f59e0b" stroke-width="1.4" stroke-dasharray="5 4" opacity=".85"/>`);
-      parts.push(`<text x="${W - pr}" y="${(y - 5).toFixed(1)}" text-anchor="end" font-size="10" fill="#d97706" font-family="inherit">${esc(goalLabel)} ${esc(String(unitLabel(goal)))}</text>`);
+      parts.push(`<text x="${W - pr}" y="${(y - 5).toFixed(1)}" text-anchor="end" font-size="10" fill="#d97706" font-family="inherit">${esc(goalLabel)} ${esc(String(axisLabel(goal)))}</text>`);
     }
     // 柱子
     data.forEach((d, i) => {
